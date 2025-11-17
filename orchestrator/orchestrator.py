@@ -34,28 +34,50 @@ class Orchestrator:
     def _extract_name(self, text: str) -> str:
         """
         Пытается извлечь имя из фраз: "Меня зовут Костя", "Я — Костя", "Костя".
-        Возвращает имя или None.
+        Возвращает имя или None. Игнорирует распространенные приветствия.
         """
-        text = text.strip()
-        if not text:
+        text_clean = text.strip()
+        if not text_clean:
+            return None
+
+        # Список слов для исключения (в нижнем регистре)
+        greetings = ["привет", "здравствуй", "здравствуйте", "добрый день", "доброе утро", "добрый вечер"]
+        if text_clean.lower() in greetings:
             return None
 
         # Паттерн 1: "зовут Костя", "я — Костя", "это Костя"
         match = re.search(
-            r"(?:зовут|это|я[^\w]*|меня зовут)\s+([А-ЯЁ][а-яё]+)",
-            text,
-            re.IGNORECASE
+            # (?i:...) делает часть выражения нечувствительной к регистру,
+            # в то время как имя ([А-ЯЁ][а-яё]+) остается чувствительным.
+            r"(?i:зовут|это|я[^\w]*|меня зовут)\s+([А-ЯЁ][а-яё]+)",
+            text_clean
         )
         if match:
-            return match.group(1)  # ← Только одна группа!
+            return match.group(1)
 
-        # Паттерн 2: просто имя (одно слово с заглавной)
-        if re.fullmatch(r"[А-ЯЁ][а-яё]+", text):
-            return text
+        # Паттерн 2: просто имя (одно слово с заглавной, не из списка приветствий)
+        if re.fullmatch(r"[А-ЯЁ][а-яё]+", text_clean):
+            return text_clean
 
         return None
 
+    def get_greeting(self) -> str:
+        """
+        Генерирует приветствие в зависимости от того, новый ли это пользователь.
+        """
+        user_name = self.memory.get_user_name()
+        last_summary = self.memory.get_last_session_summary()
 
+        if user_name:
+            greeting = f"{user_name}, рад вас снова видеть! "
+            if last_summary:
+                greeting += f"В прошлый раз мы говорили о следующем: '{last_summary}'. Хотите продолжить или у вас новая задача?"
+            else:
+                greeting += "Чем я могу вам помочь сегодня?"
+        else:
+            greeting = "Здравствуйте! Чтобы наш диалог был продуктивнее, скажите, как я могу к вам обращаться?"
+
+        return greeting
     
     def _sync_agent_memories(self):
         """Передаёт известные факты в агентов (опционально)"""

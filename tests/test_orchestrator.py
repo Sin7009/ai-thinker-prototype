@@ -154,5 +154,52 @@ class TestOrchestrator(unittest.TestCase):
         )
 
 
+class TestNameAndGreeting(unittest.TestCase):
+
+    def setUp(self):
+        """Настройка перед каждым тестом."""
+        self.orchestrator = Orchestrator(user_id_stub="test_user_greeting")
+        self.orchestrator.memory = MagicMock()
+
+    def test_extract_name_positive(self):
+        """Тест: _extract_name корректно извлекает имена."""
+        self.assertEqual(self.orchestrator._extract_name("Меня зовут Алексей"), "Алексей")
+        self.assertEqual(self.orchestrator._extract_name("Я — Мария"), "Мария")
+        self.assertEqual(self.orchestrator._extract_name("  Екатерина  "), "Екатерина")
+        self.assertEqual(self.orchestrator._extract_name("это Пётр"), "Пётр")
+
+    def test_extract_name_negative(self):
+        """Тест: _extract_name игнорирует приветствия и некорректные фразы."""
+        self.assertIsNone(self.orchestrator._extract_name("Привет"))
+        self.assertIsNone(self.orchestrator._extract_name("  добрый день "))
+        self.assertIsNone(self.orchestrator._extract_name("Как дела?"))
+        self.assertIsNone(self.orchestrator._extract_name("я хочу поговорить"))
+        self.assertIsNone(self.orchestrator._extract_name("алексей")) # Должно быть с большой буквы
+
+    def test_get_greeting_new_user(self):
+        """Тест: get_greeting для нового пользователя."""
+        self.orchestrator.memory.get_user_name.return_value = None
+        self.orchestrator.memory.get_last_session_summary.return_value = None
+        greeting = self.orchestrator.get_greeting()
+        self.assertIn("Здравствуйте!", greeting)
+        self.assertIn("как я могу к вам обращаться?", greeting)
+
+    def test_get_greeting_returning_user_no_summary(self):
+        """Тест: get_greeting для вернувшегося пользователя без саммари."""
+        self.orchestrator.memory.get_user_name.return_value = "Иван"
+        self.orchestrator.memory.get_last_session_summary.return_value = None
+        greeting = self.orchestrator.get_greeting()
+        self.assertIn("Иван, рад вас снова видеть!", greeting)
+        self.assertIn("Чем я могу вам помочь сегодня?", greeting)
+
+    def test_get_greeting_returning_user_with_summary(self):
+        """Тест: get_greeting для вернувшегося пользователя с саммари."""
+        self.orchestrator.memory.get_user_name.return_value = "Анна"
+        self.orchestrator.memory.get_last_session_summary.return_value = "обсуждали котиков"
+        greeting = self.orchestrator.get_greeting()
+        self.assertIn("Анна, рад вас снова видеть!", greeting)
+        self.assertIn("обсуждали котиков", greeting)
+
+
 if __name__ == '__main__':
     unittest.main()
