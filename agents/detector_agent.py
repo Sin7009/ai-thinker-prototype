@@ -61,7 +61,7 @@ class DetectorAgent:
 **Формат ответа:**
 Верни результат СТРОГО в формате единого JSON-объекта.
 Объект должен содержать три ключа: "cognitive_biases", "emotional_tone", "communication_style".
-- "cognitive_biases" должен быть списком словарей, как в предыдущих инструкциях (пустой список [], если искажений нет).
+- "cognitive_biases" должен быть списком словарей (пустой список [], если искажений нет).
 - "emotional_tone" должен содержать одну строку с названием эмоции.
 - "communication_style" должен содержать одну строку с названием стиля.
 
@@ -82,22 +82,23 @@ class DetectorAgent:
 """
         return prompt
 
-    def analyze(self, text: str) -> str:
+    def analyze(self, text: str) -> dict:
         """
         Анализирует текст на наличие когнитивных искажений, эмоционального тона и стиля коммуникации.
-        Возвращает JSON-строку с комплексным результатом.
+        Возвращает словарь Python с комплексным результатом.
         """
+        default_response = {
+            "cognitive_biases": [],
+            "emotional_tone": "Нейтральный",
+            "communication_style": "Аналитический"
+        }
+
         if not self.llm:
             logging.error("LLM не была инициализирована. Анализ невозможен.")
-            return json.dumps({"error": "LLM not initialized"}, ensure_ascii=False, indent=2)
+            return default_response
 
         if not text:
-            # Возвращаем структуру по умолчанию
-            return json.dumps({
-                "cognitive_biases": [],
-                "emotional_tone": "Нейтральный",
-                "communication_style": "Аналитический"
-            }, ensure_ascii=False, indent=2)
+            return default_response
 
         messages = [
             SystemMessage(content=self.system_prompt_template),
@@ -108,50 +109,25 @@ class DetectorAgent:
             res = self.llm.invoke(messages)
             llm_response_text = res.content
 
-            # Попытка очистить ответ от возможных артефактов (например, ```json)
             if "```json" in llm_response_text:
                 llm_response_text = llm_response_text.split("```json")[1].split("```")[0].strip()
 
-            # Парсинг JSON
-            detected_biases = json.loads(llm_response_text)
+            analysis_data = json.loads(llm_response_text)
 
-            # Простая валидация формата
-            if not isinstance(detected_biases, list):
-                raise ValueError("LLM-ответ не является списком")
+            # Новая, более надежная валидация
+            if not isinstance(analysis_data, dict) or not all(k in analysis_data for k in ["cognitive_biases", "emotional_tone", "communication_style"]):
+                raise ValueError("LLM-ответ имеет неверную структуру (отсутствуют ключи)")
 
-            logging.info(f"Анализ текста '{text[:50]}...' завершен. Найдено искажений: {len(detected_biases)}")
-            return json.dumps(detected_biases, ensure_ascii=False, indent=2)
+            if not isinstance(analysis_data["cognitive_biases"], list):
+                 raise ValueError("Ключ 'cognitive_biases' не является списком")
+
+
+            logging.info(f"Анализ текста '{text[:50]}...' завершен.")
+            return analysis_data
 
         except json.JSONDecodeError as e:
             logging.error(f"Ошибка декодирования JSON от LLM: {e}\nОтвет LLM:\n{llm_response_text}")
-            return json.dumps({"error": "Invalid JSON response from LLM", "details": str(e)}, ensure_ascii=False, indent=2)
+            return default_response
         except Exception as e:
             logging.error(f"Неожиданная ошибка при анализе текста в DetectorAgent: {e}")
-            return json.dumps({"error": "An unexpected error occurred", "details": str(e)}, ensure_ascii=False, indent=2)
-
-# Пример использования (для отладки)
-if __name__ == '__main__':
-    # Убедитесь, что GIGACHAT_CREDENTIALS установлен как переменная окружения
-    if 'GIGACHAT_CREDENTIALS' not in os.environ:
-        print("Ошибка: Переменная окружения GIGACHAT_CREDENTIALS не установлена.")
-    else:
-        agent = DetectorAgent()
-
-        test_text_1 = "Если я не сдам этот экзамен на отлично, я полный неудачник, и вся моя учеба была зря. Это будет просто катастрофа."
-        test_text_2 = "Мой друг не ответил на сообщение, он наверняка на меня обиделся."
-        test_text_3 = "Сегодня прекрасный день, и я уверен, что все будет хорошо."
-
-        print("\n--- Тест 1 ---")
-        print(f"Текст: {test_text_1}")
-        print("Результат анализа:")
-        print(agent.analyze(test_text_1))
-
-        print("\n--- Тест 2 ---")
-        print(f"Текст: {test_text_2}")
-        print("Результат анализа:")
-        print(agent.analyze(test_text_2))
-
-        print("\n--- Тест 3 ---")
-        print(f"Текст: {test_text_3}")
-        print("Результат анализа:")
-        print(agent.analyze(test_text_3))
+            return default_response

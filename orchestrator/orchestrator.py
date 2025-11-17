@@ -164,11 +164,12 @@ class Orchestrator:
 
         # 1. Психолингвистический анализ
         try:
-            analysis_result = self.detector_agent.analyze(text)
-            analysis_data = json.loads(analysis_result)
+            # DetectorAgent теперь возвращает dict, парсинг не нужен
+            analysis_data = self.detector_agent.analyze(text)
 
             # Сохраняем когнитивные искажения
-            if 'cognitive_biases' in analysis_data and isinstance(analysis_data['cognitive_biases'], list):
+            # Проверяем, что ключ существует и его значение - список
+            if 'cognitive_biases' in analysis_data and isinstance(analysis_data.get('cognitive_biases'), list):
                 for pattern in analysis_data['cognitive_biases']:
                     internal_name = RUSSIAN_TO_INTERNAL_BIAS_MAP.get(pattern.get('name'))
                     if internal_name:
@@ -184,8 +185,9 @@ class Orchestrator:
                 communication_style=analysis_data.get('communication_style', 'Аналитический')
             )
 
-        except (json.JSONDecodeError, TypeError) as e:
-            print(f"Ошибка обработки JSON от DetectorAgent: {e}. Ответ: {analysis_result}")
+        except TypeError as e:
+            # Эта ошибка может возникнуть, если analyze вернет не-словарь
+            print(f"Ошибка обработки ответа от DetectorAgent: {e}. Ответ: {analysis_data}")
 
         # 2. Проверка на запрос о памяти
         if self._should_report_memory(text):
