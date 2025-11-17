@@ -2,7 +2,8 @@ import uuid
 import json
 from agents.task_agent import TaskAgent
 from agents.detector_agent import DetectorAgent
-from agents.methodology_agent import MethodologyAgent  # ← Добавлено
+from agents.methodology_agent import MethodologyAgent
+from agents.bias_mapping import RUSSIAN_TO_INTERNAL_BIAS_MAP
 from orchestrator.dynamic_memory import DynamicMemory
 from orchestrator.action_library import ActionLibrary #Нужно реализовать библиотеку действий
 from database.db_connector import get_chroma_collection, chroma_client
@@ -127,15 +128,37 @@ class Orchestrator:
     def process_input(self, text: str) -> str:
         self.memory.save_interaction(text, is_user=True)
 
-        # Мета-анализ
+        # Мета-анализ с новым DetectorAgent
         analysis_result = self.detector_agent.analyze(text)
-        detected_patterns = json.loads(analysis_result)
-        for pattern in detected_patterns:
-            self.memory.save_cognitive_pattern(
-                pattern_name=pattern['bias'],
-                confidence=pattern['confidence'],
-                context=pattern['context']
-            )
+        processed_patterns = []
+        try:
+            # Ответ от нового агента - это список словарей с ключом 'name'
+            detected_patterns = json.loads(analysis_result)
+
+            if isinstance(detected_patterns, list):
+                for pattern in detected_patterns:
+                    russian_name = pattern.get('name')
+                    # Используем карту для получения внутреннего имени 'bias'
+                    internal_name = RUSSIAN_TO_INTERNAL_BIAS_MAP.get(russian_name)
+
+                    if internal_name:
+                        # Добавляем внутреннее имя в словарь для совместимости
+                        pattern['bias'] = internal_name
+                        processed_patterns.append(pattern)
+
+                        # Сохраняем в память, используя внутреннее имя
+                        self.memory.save_cognitive_pattern(
+                            pattern_name=internal_name,
+                            confidence=pattern.get('confidence', 0),
+                            context=pattern.get('context', '')
+                        )
+            elif 'error' in detected_patterns:
+                print(f"DetectorAgent вернул ошибку: {detected_patterns['error']}")
+
+        except (json.JSONDecodeError, TypeError) as e:
+            print(f"Ошибка обработки JSON от DetectorAgent: {e}. Ответ: {analysis_result}")
+            # В случае ошибки работаем с пустым списком
+            processed_patterns = []
 
         # 🔍 Проверка: не просит ли пользователь вспомнить
         if self._should_report_memory(text):
@@ -153,7 +176,8 @@ class Orchestrator:
                     context_memory += "\n\n🧠 Из вашего прошлого диалога:\n" + "\n".join([
                         f"- «{m}»" for m in relevant_memories
                     ])
-            response = self.handle_copilot_mode(text, detected_patterns, context_memory)
+            # Передаем обработанные паттерны дальше
+            response = self.handle_copilot_mode(text, processed_patterns, context_memory)
         elif self.mode == AgentMode.PARTNER:
             response = self.handle_partner_mode(text)
         else:
