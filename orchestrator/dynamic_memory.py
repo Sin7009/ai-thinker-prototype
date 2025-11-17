@@ -225,6 +225,12 @@ class DynamicMemory:
         if traits_summary:
             summary_parts.append(traits_summary)
 
+        # Новые психолингвистические данные
+        if self.user.profile and self.user.profile.last_emotional_tone:
+            summary_parts.append(f"Твой последний эмоциональный тон был '{self.user.profile.last_emotional_tone}'.")
+        if self.user.profile and self.user.profile.dominant_communication_style:
+            summary_parts.append(f"Твой доминирующий стиль общения — '{self.user.profile.dominant_communication_style}'.")
+
         return " ".join(summary_parts) if summary_parts else "Пока что я мало о тебе знаю."
 
     def save_user_trait(self, trait_type: str, trait_description: str, confidence: int):
@@ -317,6 +323,23 @@ class DynamicMemory:
 
     def get_last_session_summary(self) -> str:
         return self.user.profile.last_session_summary if self.user.profile and self.user.profile.last_session_summary else None
+
+    def save_psycholinguistic_features(self, emotional_tone: str, communication_style: str):
+        """
+        Сохраняет последние психолингвистические метрики в профиль пользователя.
+        """
+        try:
+            if not self.user.profile:
+                # На всякий случай, если профиль еще не создан
+                self.user.profile = UserProfile(user_id=self.user.id)
+                self.db_session.add(self.user.profile)
+
+            self.user.profile.last_emotional_tone = emotional_tone
+            self.user.profile.dominant_communication_style = communication_style
+            self.db_session.commit()
+        except Exception as e:
+            self.db_session.rollback()
+            print(f"❌ Ошибка при сохранении психолингвистических метрик: {e}")
 
     def __del__(self):
         if hasattr(self, 'db_session'):

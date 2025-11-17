@@ -9,10 +9,9 @@ from orchestrator.action_library import ActionLibrary #Нужно реализо
 from database.db_connector import get_chroma_collection, chroma_client
 import re
 
-from langchain_core.messages import HumanMessage, SystemMessage  # ← Добавлено!
+from langchain_core.messages import HumanMessage, SystemMessage
 
 from .agent_mode import AgentMode
-from .partner_state import PartnerState
 
 class Orchestrator:
     def __init__(self, user_id_stub: str):
@@ -22,14 +21,11 @@ class Orchestrator:
         self.methodology_agent = MethodologyAgent(user_id=user_id_stub)
         self.detector_agent = DetectorAgent()
         self.mode = AgentMode.COPILOT
-        self.partner_state = PartnerState.IDLE  # ← Должно быть именно так
-        self.last_partner_result = None
-        self.partnership_proposed = False
         self.last_user_input = ""
         self.vector_collection = get_chroma_collection(f"dialogue_vector_{user_id_stub}")
-        self.action_library = ActionLibrary()
+        # Новая инициализация ActionLibrary
+        self.action_library = ActionLibrary(self.methodology_agent)
         print(f"Оркестратор инициализирован для пользователя {user_id_stub}.")
-
 
     def _extract_name(self, text: str) -> str:
         """
@@ -93,37 +89,50 @@ class Orchestrator:
         text_lower = text.lower()
         return any(trigger in text_lower for trigger in triggers)
 
-    def _should_propose_partner_mode(self, detected_patterns: list) -> tuple[bool, str, PartnerState | None]:
+    def _should_enter_thinking_cycle(self, text: str) -> bool:
         """
-        Проверяет, нужно ли предложить переход в режим 'Партнёр'.
-        Возвращает (True, причина, рекомендуемый_стейт) если нужно.
+        Определяет, нужно ли переходить в режим "Партнёр" (мыслительный цикл)
+        на основе ключевых фраз пользователя.
         """
-        if not detected_patterns:
-            return False, "", None
+        triggers = [
+            "давай подумаем", "помоги решить", "что мне делать",
+            "не могу понять", "нужен совет", "помоги разобраться"
+        ]
+        text_lower = text.lower().strip()
+        return any(trigger in text_lower for trigger in triggers)
 
-        # Словарь соответствия когнитивных искажений и модулей
-        bias_to_module = {
-            "black_and_white_thinking": (PartnerState.HYPOTHESIS_FIELD, "увидеть альтернативы"),
-            "overgeneralization": (PartnerState.DECONSTRUCTION, "разобрать конкретные факты"),
-            "catastrophizing": (PartnerState.STRESS_TESTING, "проверить худшие сценарии"),
-            "personalization": (PartnerState.DECONSTRUCTION, "отделить факты от личной ответственности")
-        }
+    def _diagnose_and_select_action(self, problem_description: str) -> callable:
+        """
+        Использует LLM для анализа проблемы и выбора наилучшего действия
+        из ActionLibrary.
+        """
+        system_prompt = (
+            "Ты — AI-диагност. Твоя задача — проанализировать запрос пользователя и выбрать "
+            "наиболее подходящую мыслительную технику для его решения. "
+            "Вот доступные тебе инструменты: "
+            "1. 'run_rubber_duck_debugging': Используй, когда пользователь застрял в технической проблеме, "
+            "баге в коде или не может ясно сформулировать последовательность действий. Идеально для дебаггинга. "
+            "2. 'run_five_whys': Используй, когда проблема кажется поверхностной, и нужно докопаться до "
+            "глубинной, корневой причины. Отлично подходит для организационных или личных проблем. "
+            "3. 'run_constrained_brainstorming': Используй, когда пользователь жалуется на отсутствие идей, "
+            "творческий ступор или 'паралич чистого листа'. "
+            "В ответ ты должен вернуть ТОЛЬКО название функции, которую нужно вызвать. Например: 'run_five_whys'."
+        )
 
-        # Условие 2: один паттерн, но уже встречался 2+ раза
-        for pattern in detected_patterns:
-            bias = pattern['bias']
-            frequency = self.memory.get_pattern_frequency(bias)
-            if frequency >= 2 and bias in bias_to_module:
-                state, reason_text = bias_to_module[bias]
-                return True, f"я заметил паттерн '{bias.replace('_', ' ')}' и думаю, мы могли бы {reason_text}", state
+        # Мы используем TaskAgent как "мозг" для этой задачи
+        raw_response = self.task_agent.process(problem_description, context_memory=system_prompt)
 
-        # Условие 1 (фоллбэк): 2 и более разных паттерна
-        unique_biases = {p['bias'] for p in detected_patterns}
-        if len(unique_biases) >= 2:
-            return True, "я обнаружил несколько паттернов мышления, и было бы полезно их распутать", PartnerState.DECONSTRUCTION
+        # Извлекаем название функции из ответа
+        action_name = raw_response.strip()
 
-        return False, "", None
+        # Получаем саму функцию из ActionLibrary
+        action_function = getattr(self.action_library, action_name, None)
 
+        if action_function and callable(action_function):
+            return action_function
+        else:
+            # Если LLM вернул что-то не то, используем "утенка" по умолчанию
+            return self.action_library.run_rubber_duck_debugging
 
     def _normalize_text(self, text: str) -> str:
         """Убирает лишние символы, приводит к нижнему регистру."""
@@ -149,67 +158,60 @@ class Orchestrator:
     
     def process_input(self, text: str) -> str:
         self.memory.save_interaction(text, is_user=True)
+        self.last_user_input = text
 
-        # Мета-анализ с новым DetectorAgent
-        analysis_result = self.detector_agent.analyze(text)
-        processed_patterns = []
+        # 🚀 **Новый пайплайн обработки** 🚀
+
+        # 1. Психолингвистический анализ
         try:
-            # Ответ от нового агента - это список словарей с ключом 'name'
-            detected_patterns = json.loads(analysis_result)
+            analysis_result = self.detector_agent.analyze(text)
+            analysis_data = json.loads(analysis_result)
 
-            if isinstance(detected_patterns, list):
-                for pattern in detected_patterns:
-                    russian_name = pattern.get('name')
-                    # Используем карту для получения внутреннего имени 'bias'
-                    internal_name = RUSSIAN_TO_INTERNAL_BIAS_MAP.get(russian_name)
-
+            # Сохраняем когнитивные искажения
+            if 'cognitive_biases' in analysis_data and isinstance(analysis_data['cognitive_biases'], list):
+                for pattern in analysis_data['cognitive_biases']:
+                    internal_name = RUSSIAN_TO_INTERNAL_BIAS_MAP.get(pattern.get('name'))
                     if internal_name:
-                        # Добавляем внутреннее имя в словарь для совместимости
-                        pattern['bias'] = internal_name
-                        processed_patterns.append(pattern)
-
-                        # Сохраняем в память, используя внутреннее имя
                         self.memory.save_cognitive_pattern(
                             pattern_name=internal_name,
                             confidence=pattern.get('confidence', 0),
                             context=pattern.get('context', '')
                         )
-            elif 'error' in detected_patterns:
-                print(f"DetectorAgent вернул ошибку: {detected_patterns['error']}")
+
+            # Сохраняем тон и стиль
+            self.memory.save_psycholinguistic_features(
+                emotional_tone=analysis_data.get('emotional_tone', 'Нейтральный'),
+                communication_style=analysis_data.get('communication_style', 'Аналитический')
+            )
 
         except (json.JSONDecodeError, TypeError) as e:
             print(f"Ошибка обработки JSON от DetectorAgent: {e}. Ответ: {analysis_result}")
-            # В случае ошибки работаем с пустым списком
-            processed_patterns = []
 
-        # 🔍 Проверка: не просит ли пользователь вспомнить
+        # 2. Проверка на запрос о памяти
         if self._should_report_memory(text):
             user_summary = self.memory.get_user_profile_summary()
-            response = f"Я помню следующее о тебе:\n\n{user_summary}\n\nХочешь углубиться в какую-то тему?"
+            response = f"Я помню следующее о тебе:\n\n{user_summary}"
             self.memory.save_interaction(response, is_user=False)
             return response
 
-        # Основная логика
+        # 3. Проверка на вход в мыслительный цикл
+        if self._should_enter_thinking_cycle(text):
+            self.switch_mode(AgentMode.PARTNER)
+            response = self.handle_partner_mode(text)
+            self.memory.save_interaction(response, is_user=False)
+            return response
+
+        # 4. Основная логика по режимам
         if self.mode == AgentMode.COPILOT:
-            context_memory = self.memory.get_last_session_summary_for_prompt()
-            if self._should_retrieve_memory(text):
-                relevant_memories = self.memory.search_memories(text, n_results=3)
-                if relevant_memories:
-                    context_memory += "\n\n🧠 Из вашего прошлого диалога:\n" + "\n".join([
-                        f"- «{m}»" for m in relevant_memories
-                    ])
-            # Передаем обработанные паттерны дальше
-            response = self.handle_copilot_mode(text, processed_patterns, context_memory)
+            response = self.handle_copilot_mode(text)
         elif self.mode == AgentMode.PARTNER:
             response = self.handle_partner_mode(text)
         else:
             response = "Ошибка: неизвестный режим работы."
 
+        # 5. Сохранение и вывод
         self.memory.save_interaction(response, is_user=False)
-
-        # После каждого ответа пытаемся извлечь черты
         self._infer_and_save_user_traits(text, response)
-
         return response
 
     def _infer_and_save_user_traits(self, user_input: str, agent_response: str):
@@ -281,154 +283,45 @@ class Orchestrator:
 
         return full_context
 
-    def handle_copilot_mode(self, text, detected_patterns, context_memory=""):
-        # Проверяем, не является ли ответ согласием на предыдущее предложение
-        positive_responses = ['да', 'давай', 'хорошо', 'согласен', 'ок']
-        if self.partnership_proposed and text.lower().strip() in positive_responses:
-            self.switch_mode(AgentMode.PARTNER, start_state=self.proposed_partner_state)
-            # Запускаем предложенный модуль с последним вводом пользователя
-            return self._run_partner_module(self.partner_state, self.last_user_input)
-
-        # Обогащаем контекст
+    def handle_copilot_mode(self, text: str) -> str:
+        """
+        Обрабатывает режим "Копилот": прямой ответ на запрос пользователя.
+        """
+        # Обогащаем контекст, чтобы дать LLM больше информации
         enriched_context = self._enrich_context(text)
 
-        # Сначала получаем основной ответ
+        # Получаем прямой ответ от TaskAgent
         response = self.task_agent.process(text, context_memory=enriched_context)
-        self.last_user_input = text # Сохраняем ввод для возможного перехода
-
-        # Затем, если нужно, добавляем предложение о партнерстве
-        should_propose, reason, proposed_state = self._should_propose_partner_mode(detected_patterns)
-        if should_propose and not self.partnership_proposed:
-            self.partnership_proposed = True
-            self.proposed_partner_state = proposed_state  # Сохраняем, какой стейт предложить
-            proposal = (
-                f"\n\n🔍 Кстати, {reason}. "
-                "Это может быть хорошей точкой для более глубокого анализа. "
-                "Хотите, мы вместе исследуем эту тему в режиме 'Партнёр'? "
-                "Просто скажите 'да', и мы начнём."
-            )
-            response += proposal
-
         return response
-
-
 
     def handle_partner_mode(self, text: str) -> str:
         """
-        Обрабатывает режим 'Партнёр' как стейт-машину, проводя пользователя
-        через полный методологический цикл.
+        Обрабатывает режим "Партнёр": запускает мыслительный цикл.
+        Диагностирует проблему и выбирает подходящую технику из ActionLibrary.
         """
-        # Ключевые слова для перехода на следующий этап
-        continue_keywords = ['продолжим', 'дальше', 'готовы', 'давай', 'ок', 'хорошо']
-        text_lower = text.lower().strip()
+        # 1. Диагностируем проблему и выбираем действие
+        action_to_run = self._diagnose_and_select_action(text)
 
-        # 1. Начало работы или запрос на новый цикл
-        if self.partner_state == PartnerState.IDLE:
-            self.partner_state = PartnerState.AWAITING_PROBLEM
-            return (
-                "🔍 Отлично, мы в режиме 'Партнёр'.\n"
-                "Чтобы начать полный цикл анализа, пожалуйста, опишите проблему или ситуацию, "
-                "которую вы хотели бы разобрать."
-            )
-
-        # 2. Получение проблемы и переход к деконструкции
-        if self.partner_state == PartnerState.AWAITING_PROBLEM:
-            self.last_partner_result = {"problem": text} # Сохраняем проблему
-            self.partner_state = PartnerState.DECONSTRUCTION
-            # Запускаем деконструкцию с исходным текстом проблемы
-            return self._run_partner_module(PartnerState.DECONSTRUCTION, text)
-
-        # 3. Проверяем, хочет ли пользователь перейти на следующий этап
-        if any(keyword in text_lower for keyword in continue_keywords):
-            next_state = self._get_next_state(self.partner_state)
-            if next_state:
-                self.partner_state = next_state
-                # Запускаем следующий модуль, передавая ему накопленный контекст
-                return self._run_partner_module(next_state, self.last_partner_result.get("problem", text))
-            else:
-                self.partner_state = PartnerState.IDLE
-                return "Цикл завершен. Спасибо за работу! Мы можем начать новый разбор, если хотите."
-
-        # 4. Если не переход, то продолжаем работать в текущем модуле
-        return self._run_partner_module(self.partner_state, text)
-
-    def _get_next_state(self, current_state: PartnerState) -> PartnerState | None:
-        """Определяет следующий стейт в цикле."""
-        order = [
-            PartnerState.DECONSTRUCTION,
-            PartnerState.HYPOTHESIS_FIELD,
-            PartnerState.STRESS_TESTING,
-            PartnerState.SYNTHESIS,
-            PartnerState.ASSIMILATION
-        ]
-        try:
-            current_index = order.index(current_state)
-            if current_index + 1 < len(order):
-                return order[current_index + 1]
-            return None # Цикл завершен
-        except ValueError:
-            return None
-
-
-    def _run_partner_module(self, state: PartnerState, text: str) -> str:
-        """Вызывает MethodologyAgent с промптом для конкретного модуля."""
-        prompts = {
-            PartnerState.DECONSTRUCTION: "Ты — AI-методолог, твоя задача — провести 'деконструкцию' проблемы. Помогай пользователю отделить факты от эмоций и мнений, задавай уточняющие вопросы, чтобы составить ясную 'карту фактов'. Спроси, готовы ли продолжить, когда факты будут собраны.",
-            PartnerState.HYPOTHESIS_FIELD: "Ты — AI-методолог. На основе собранных фактов, помоги пользователю сгенерировать 3-4 взаимоисключающие гипотезы. Побуждай к творчеству: очевидная, инвертированная, аналоговая гипотезы. Спроси, готовы ли продолжить, когда гипотезы будут готовы.",
-            PartnerState.STRESS_TESTING: "Ты — AI-методолог. Помоги пользователю провести 'стресс-тестинг' выбранной гипотезы. Используй техники 'Pre-mortem' (что если все пойдет не так?), 'Черный лебедь' (поиск фатальной уязвимости). Спроси, готовы ли продолжить.",
-            PartnerState.SYNTHESIS: "Ты — AI-методолог. Помоги пользователю синтезировать новую, 'третью идею' из сильных сторон проверенных гипотез. Твоя цель — найти нелинейное, сильное решение. Спроси, готовы ли продолжить.",
-            PartnerState.ASSIMILATION: "Ты — AI-методолог. Помоги пользователю 'ассимилировать' новый опыт. Обсудите, как изменилось его понимание проблемы и какие конкретные шаги он может предпринять. Поблагодари за работу."
-        }
-        system_prompt = prompts.get(state, "Ты — AI-помощник.")
-
-        # Обогащаем контекст
-        enriched_context = self._enrich_context(text)
-
-        # Добавляем в промпт накопленный контекст разбора
-        full_prompt = (
-            f"{system_prompt}\n\n"
-            f"**Весь доступный контекст:**\n{enriched_context}\n\n"
-            f"**Текущий контекст этого разбора:**\n"
-            f"{self.last_partner_result.get('problem', 'Нет данных')}"
-        )
-
-        response = self.methodology_agent.execute(
-            system_prompt=full_prompt,
-            user_prompt=text
-        )
-
-        # Обновляем накопленный результат (очень упрощенно)
-        self.last_partner_result["problem"] += f"\n\nОтвет на {state.value}:\n{response}"
+        # 2. Запускаем выбранное действие
+        # Метод из ActionLibrary сам вызовет MethodologyAgent с нужным промптом
+        response = action_to_run(text)
 
         return response
     
-    def switch_mode(self, new_mode: AgentMode, start_state: PartnerState | None = None):
+    def switch_mode(self, new_mode: AgentMode):
+        """Переключает режим работы Оркестратора."""
         self.mode = new_mode
-        self.partnership_proposed = False # Сбрасываем флаг предложения при любой смене режима
-
-        if new_mode == AgentMode.PARTNER:
-            # Если передан конкретный стейт, начинаем с него
-            if start_state:
-                self.partner_state = start_state
-                # Инициализируем last_partner_result, чтобы было куда писать
-                self.last_partner_result = {"problem": self.last_user_input}
-            else:
-                self.partner_state = PartnerState.IDLE
-                self.last_partner_result = None
-
-        print(f"Режим изменен на: {self.mode.value}. Начальное состояние партнера: {self.partner_state.value}")
-
-    def reset_partner_session(self):
-        self.partner_state = PartnerState.IDLE
-        self.last_partner_result = None
-        self.methodology_agent.clear_memory()  # ← Исправленный вызов
-        print("Сессия 'Партнер' сброшена.")
+        if new_mode == AgentMode.COPILOT:
+            # При выходе из режима "Партнер" можно очистить память агента методологий
+            self.methodology_agent.clear_memory()
+            print("Режим изменен на: COPILOT. Сессия партнёрства завершена.")
+        else:
+            print(f"Режим изменен на: {self.mode.value}.")
 
     def reset_all_memory(self):
+        """Сбрасывает всю память, включая TaskAgent и MethodologyAgent."""
         self.task_agent.clear_memory()
-        self.methodology_agent.memory.clear()
-        self.partner_state = PartnerState.IDLE
-        self.last_partner_result = None
+        self.methodology_agent.clear_memory()
         print("Вся память агентов очищена.")
 
     def summarize_session(self, last_user_input: str = "") -> str:

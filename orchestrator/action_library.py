@@ -2,82 +2,67 @@ from agents.methodology_agent import MethodologyAgent
 
 class ActionLibrary:
     """
-    Репозиторий программных функций, которые Оркестратор может вызывать
-    для реализации "маршрутов" эксперта.
+    Репозиторий конкретных мыслительных техник, которые Оркестратор может предлагать пользователю.
+    Каждая техника — это отдельный метод, который вызывает MethodologyAgent с особым системным промптом.
     """
-    def __init__(self):
-        self.methodology_agent = MethodologyAgent()
+    def __init__(self, methodology_agent: MethodologyAgent):
+        self.methodology_agent = methodology_agent
         print("Библиотека действий инициализирована.")
 
-    def run_deconstruction(self, user_narrative: str) -> str:
+    def run_rubber_duck_debugging(self, problem_description: str) -> str:
         """
-        Запускает модуль "Деконструкция".
+        Проводит пользователя через "Метод утёнка".
+        ИИ выступает в роли молчаливого слушателя, которому пользователь должен
+        пошагово объяснить свою проблему.
         """
         system_prompt = (
-            "Ты — AI-методолог. Твоя задача — помочь пользователю деконструировать его проблему. "
-            "Преобразуй его нарратив в структурированную 'карту фактов'. "
-            "Отделяй объективные факты от субъективных оценок. "
-            "Представь результат в виде списка ключевых фактов."
+            "Твоя роль — 'резиновый утёнок'. Пользователь столкнулся с проблемой, которую не может решить. "
+            "Твоя задача — помочь ему, просто внимательно слушая. Он должен объяснить тебе, в чем дело, шаг за шагом, "
+            "как будто ты ничего не знаешь о контексте. "
+            "Твой стиль: ассертивный, но поддерживающий. "
+            "Твой первый ответ должен быть таким: "
+            "'Отлично, давай используем 'метод утёнка'. Я ничего не знаю о твоей проблеме. "
+            "Твоя задача — объяснить мне её с самого начала, шаг за шагом. Что ты пытаешься сделать и что именно не работает? "
+            "Говори так, как будто я ничего не понимаю. Я буду слушать.' "
+            "Далее, задавай простые уточняющие вопросы ('А что происходит потом?', 'Что ты ожидал увидеть в этот момент?'), "
+            "чтобы стимулировать его объяснение. Не предлагай решений. Твоя цель — помочь ему найти решение самому в процессе объяснения."
         )
-        print("Запуск модуля 'Деконструкция'...")
-        return self.methodology_agent.execute(system_prompt, user_narrative)
+        print("Запуск техники 'Метод утёнка'...")
+        # Первый вызов просто передает описание проблемы, чтобы агент начал диалог
+        return self.methodology_agent.invoke(system_prompt, problem_description)
 
-    def run_hypothesis_field(self, fact_map: str) -> str:
+    def run_five_whys(self, initial_problem: str) -> str:
         """
-        Запускает модуль "Поле Гипотез".
-        Генерирует 3-4 взаимоисключающие гипотезы на основе карты фактов.
+        Проводит пользователя через технику "Пять почему" для поиска корневой причины.
         """
         system_prompt = (
-            "Ты — AI-стратег. Твоя задача — сгенерировать поле гипотез на основе представленных фактов. "
-            "Создай 3-4 взаимоисключающие гипотезы, которые объясняют эти факты. "
-            "Гипотезы должны быть разнообразными: одна очевидная, одна инвертированная (противоположная), одна творческая (аналогия)."
+            "Твоя роль — коуч, использующий технику 'Пять почему'. Пользователь описал проблему. "
+            "Твоя задача — докопаться до её корневой причины, последовательно задавая вопрос 'Почему?'. "
+            "Твой стиль: настойчивый, но не агрессивный. "
+            "Твой первый ответ: 'Хорошо, давай разберёмся в первопричине. Твоя проблема: «{initial_problem}». Почему это происходит?'"
+            "После каждого ответа пользователя, снова задавай вопрос 'Почему это так?' к его последнему утверждению. "
+            "Продолжай, пока не дойдёшь до фундаментальной причины (обычно 4-5 итераций). "
+            "В конце подрезюмируй найденную корневую причину."
         )
-        print("Запуск модуля 'Поле Гипотез'...")
-        user_prompt = f"Вот карта фактов, которую мы составили:\n\n{fact_map}\n\nПожалуйста, предложи несколько гипотез для их объяснения."
-        return self.methodology_agent.execute(system_prompt, user_prompt)
-    def run_probe_contradiction(self, fact_map: str) -> str:
-    
+        print("Запуск техники 'Пять почему'...")
+        return self.methodology_agent.invoke(system_prompt.format(initial_problem=initial_problem), initial_problem)
+
+    def run_constrained_brainstorming(self, topic: str) -> str:
+        """
+        Проводит сессию мозгового штурма с искусственными ограничениями для стимулирования креативности.
+        """
         system_prompt = (
-            "Ты — AI-стратег. Твоя задача — сгенерировать факт-карту по полученным данным"
+            "Твоя роль — фасилитатор мозгового штурма. Пользователь хочет сгенерировать идеи, но испытывает трудности. "
+            "Твоя задача — ввести неожиданные ограничения, чтобы сломать ступор. "
+            "Твой стиль: креативный, игровой, ассертивный. "
+            "Твой первый ответ: 'Классический мозговой штурм — это скучно. Давай сыграем в игру. "
+            "Тема: «{topic}». Теперь представь, что ты должен решить эту задачу, но... ' "
+            "А затем предложи одно из следующих ограничений: "
+            "1. ...с бюджетом в 100 рублей. "
+            "2. ...если бы это нужно было сделать за 1 час. "
+            "3. ...для аудитории 8-летних детей. "
+            "4. ...используя только технологии 1980-х годов. "
+            "Выбери одно и попроси пользователя накидать самые безумные идеи в этих рамках. Жди ответа."
         )
-        return self.methodology_agent.execute(system_prompt, fact_map)
-    def run_motivation_analysis(self, problem: str) -> str:
-        
-        system_prompt = (
-        )
-        return self.methodology_agent.execute(system_prompt, problem)
-    def run_motivation_hypothesis(self, problem: str) -> str:
-        
-        system_prompt = (
-        )
-        return self.methodology_agent.execute(system_prompt, problem)
-    def run_analyze_weaknesses(self, problem: str) -> str: 
-        
-        system_prompt = (
-        )
-        return self.methodology_agent.execute(system_prompt, problem)
-    def run_analyze_strengths(self, problem: str) -> str: 
-        
-        system_prompt = (
-        )
-        return self.methodology_agent.execute(system_prompt, problem)
-    def run_analyze_opportunities(self, problem: str) -> str: 
-        
-        system_prompt = (
-        )
-        return self.methodology_agent.execute(system_prompt, problem)
-    def run_analyze_threats(self, problem: str) -> str:
-        
-        system_prompt = (
-        )
-        return self.methodology_agent.execute(system_prompt, problem)
-    def run_analyze_technical(self, problem: str) -> str:
-        
-        system_prompt = (
-        )
-        return self.methodology_agent.execute(system_prompt, problem)
-    def run_analyze_business(self, problem: str) -> str: 
-        
-        system_prompt = (
-        )
-        return self.methodology_agent.execute(system_prompt, problem)
+        print("Запуск техники 'Мозговой штурм с ограничениями'...")
+        return self.methodology_agent.invoke(system_prompt.format(topic=topic), topic)

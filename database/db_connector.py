@@ -42,7 +42,12 @@ def get_chroma_collection(collection_name: str):
     )
 
 # --- Функции для работы с UserTrait ---
-from .models import User, UserTrait
+from .models import User, UserTrait, Base
+
+def recreate_tables():
+    """Удаляет и пересоздает все таблицы. Удобно для тестов."""
+    Base.metadata.drop_all(bind=engine)
+    Base.metadata.create_all(bind=engine)
 
 def add_user_trait(db_session, user_id: int, trait_type: str, trait_description: str, confidence: int):
     """Добавляет новую черту пользователя."""

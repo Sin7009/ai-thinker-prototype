@@ -50,6 +50,9 @@ class UserProfile(Base):
     user_id = Column(Integer, ForeignKey('users.id'), unique=True)
     name = Column(String, nullable=True)
     last_session_summary = Column(Text, nullable=True)
+    # Новые поля для психолингвистического анализа
+    last_emotional_tone = Column(String, nullable=True)
+    dominant_communication_style = Column(String, nullable=True)
     updated_at = Column(DateTime(timezone=True), default=datetime.datetime.utcnow)
 
     user = relationship("User", back_populates="profile")
