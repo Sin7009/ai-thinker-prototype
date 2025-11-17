@@ -1,8 +1,8 @@
 # В начале файла
 from sqlalchemy.orm import Session
-from database.models import User, CognitivePattern, DialogueEntry, UserProfile
+from database.models import User, CognitivePattern, DialogueEntry, UserProfile, UserTrait
 from chromadb.utils.embedding_functions import SentenceTransformerEmbeddingFunction, DefaultEmbeddingFunction
-from database.db_connector import SessionLocal, chroma_client, get_chroma_collection
+from database.db_connector import SessionLocal, chroma_client, get_chroma_collection, add_user_trait, get_user_traits
 from datetime import datetime, timedelta
 from sqlalchemy import desc
 
@@ -220,7 +220,42 @@ class DynamicMemory:
         if recent_messages > 0:
             summary_parts.append(f"Мы уже обменялись {recent_messages} сообщениями.")
 
+        # Черты пользователя
+        traits_summary = self.get_user_traits_summary()
+        if traits_summary:
+            summary_parts.append(traits_summary)
+
         return " ".join(summary_parts) if summary_parts else "Пока что я мало о тебе знаю."
+
+    def save_user_trait(self, trait_type: str, trait_description: str, confidence: int):
+        """Сохраняет новую черту пользователя в БД."""
+        try:
+            add_user_trait(
+                db_session=self.db_session,
+                user_id=self.user.id,
+                trait_type=trait_type,
+                trait_description=trait_description,
+                confidence=confidence
+            )
+            print(f"✅ Сохранена черта '{trait_type}': {trait_description}")
+        except Exception as e:
+            print(f"❌ Ошибка при сохранении черты: {e}")
+
+    def get_user_traits_summary(self) -> str:
+        """Возвращает форматированную строку с чертами пользователя."""
+        try:
+            traits = get_user_traits(self.db_session, self.user.id)
+            if not traits:
+                return ""
+
+            summary_parts = []
+            for trait in traits:
+                summary_parts.append(f"[{trait.trait_type.capitalize()}] {trait.trait_description}")
+
+            return "Наблюдаемые черты: " + "; ".join(summary_parts) + "."
+        except Exception as e:
+            print(f"Ошибка при получении черт: {e}")
+            return ""
 
     def get_full_profile_context(self) -> str:
         """

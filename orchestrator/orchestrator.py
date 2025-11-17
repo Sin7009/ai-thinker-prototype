@@ -161,8 +161,79 @@ class Orchestrator:
 
         self.memory.save_interaction(response, is_user=False)
 
+        # После каждого ответа пытаемся извлечь черты
+        self._infer_and_save_user_traits(text, response)
+
         return response
 
+    def _infer_and_save_user_traits(self, user_input: str, agent_response: str):
+        """
+        Анализирует последний обмен сообщениями, чтобы вывести и сохранить
+        черты пользователя (предпочтения, интересы и т.д.).
+        """
+        system_prompt = (
+            "Ты — AI-аналитик, специализирующийся на психологии. Твоя задача — "
+            "проанализировать диалог и сделать выводы о пользователе. "
+            "Основывайся только на предоставленном тексте. "
+            "Верни свои выводы в виде списка JSON-объектов. Каждый объект должен иметь "
+            "три ключа: 'trait_type' (тип черты: 'preference', 'interest', 'communication_style'), "
+            "'trait_description' (описание черты) и 'confidence' (твоя уверенность в выводе от 0 до 100). "
+            "Если выводов нет, верни пустой список []."
+        )
+
+        # Мы используем TaskAgent как "мозг" для этой задачи
+        # В будущем это может быть отдельный, специализированный агент
+        dialogue_snippet = f"Пользователь: «{user_input}»\nАгент: «{agent_response}»"
+
+        try:
+            # Используем TaskAgent для вывода
+            raw_response = self.task_agent.process(dialogue_snippet, context_memory=system_prompt)
+
+            # Извлекаем JSON из ответа
+            json_part = raw_response[raw_response.find('['):raw_response.rfind(']')+1]
+            inferred_traits = json.loads(json_part)
+
+            for trait in inferred_traits:
+                if all(k in trait for k in ['trait_type', 'trait_description', 'confidence']):
+                    # Простое правило: сохраняем, только если уверенность > 70
+                    if trait['confidence'] > 70:
+                        self.memory.save_user_trait(
+                            trait_type=trait['trait_type'],
+                            trait_description=trait['trait_description'],
+                            confidence=trait['confidence']
+                        )
+        except (json.JSONDecodeError, IndexError) as e:
+            # Ошибки парсинга JSON — это нормально, если LLM ответил не в том формате
+            # print(f"Не удалось извлечь черты из ответа: {raw_response}. Ошибка: {e}")
+            pass
+        except Exception as e:
+            print(f"Произошла ошибка при выводе черт пользователя: {e}")
+
+
+    def _enrich_context(self, query: str) -> str:
+        """
+        Собирает и обогащает контекст для передачи в LLM.
+        Включает релевантные диалоги (RAG) и сводку профиля пользователя.
+        """
+        # 1. RAG из ChromaDB
+        relevant_memories = self.memory.search_memories(query, n_results=3)
+        rag_context = ""
+        if relevant_memories:
+            rag_context = "Вот релевантные фрагменты из прошлых диалогов:\n" + "\n".join(
+                [f"- «{m}»" for m in relevant_memories]
+            )
+
+        # 2. Сводка из SQLite
+        profile_summary = self.memory.get_user_profile_summary()
+
+        # 3. Объединение
+        full_context = ""
+        if profile_summary:
+            full_context += f"**Информация о пользователе:**\n{profile_summary}\n\n"
+        if rag_context:
+            full_context += f"**Контекст диалога:**\n{rag_context}\n\n"
+
+        return full_context
 
     def handle_copilot_mode(self, text, detected_patterns, context_memory=""):
         # Проверяем, не является ли ответ согласием на предыдущее предложение
@@ -172,8 +243,11 @@ class Orchestrator:
             # Запускаем предложенный модуль с последним вводом пользователя
             return self._run_partner_module(self.partner_state, self.last_user_input)
 
+        # Обогащаем контекст
+        enriched_context = self._enrich_context(text)
+
         # Сначала получаем основной ответ
-        response = self.task_agent.process(text, context_memory=context_memory)
+        response = self.task_agent.process(text, context_memory=enriched_context)
         self.last_user_input = text # Сохраняем ввод для возможного перехода
 
         # Затем, если нужно, добавляем предложение о партнерстве
@@ -261,10 +335,14 @@ class Orchestrator:
         }
         system_prompt = prompts.get(state, "Ты — AI-помощник.")
 
-        # Добавляем в промпт накопленный контекст
+        # Обогащаем контекст
+        enriched_context = self._enrich_context(text)
+
+        # Добавляем в промпт накопленный контекст разбора
         full_prompt = (
             f"{system_prompt}\n\n"
-            f"**Текущий контекст разбора:**\n"
+            f"**Весь доступный контекст:**\n{enriched_context}\n\n"
+            f"**Текущий контекст этого разбора:**\n"
             f"{self.last_partner_result.get('problem', 'Нет данных')}"
         )
 

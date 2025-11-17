@@ -14,7 +14,9 @@ class TestOrchestrator(unittest.TestCase):
         self.orchestrator.detector_agent = MagicMock()
         self.orchestrator.action_library = MagicMock()
         self.orchestrator.memory = MagicMock()
-        self.orchestrator.history_collection = MagicMock()
+
+        # Мокаем новый метод вывода черт, чтобы он не мешал другим тестам
+        self.orchestrator._infer_and_save_user_traits = MagicMock()
 
         # Указываем, что detector_agent.analyze должен возвращать пустой JSON-список
         self.orchestrator.detector_agent.analyze.return_value = json.dumps([])
@@ -68,6 +70,43 @@ class TestOrchestrator(unittest.TestCase):
         self.orchestrator.reset_partner_session()
         self.assertEqual(self.orchestrator.partner_state, PartnerState.IDLE)
         self.assertIsNone(self.orchestrator.last_partner_result)
+
+    def test_enrich_context(self):
+        """Тест: обогащение контекста данными из памяти."""
+        # Настраиваем моки
+        self.orchestrator.memory.search_memories.return_value = ["старый диалог"]
+        self.orchestrator.memory.get_user_profile_summary.return_value = "Профиль пользователя"
+
+        context = self.orchestrator._enrich_context("новый запрос")
+
+        # Проверяем, что методы были вызваны
+        self.orchestrator.memory.search_memories.assert_called_with("новый запрос", n_results=3)
+        self.orchestrator.memory.get_user_profile_summary.assert_called_once()
+
+        # Проверяем содержимое
+        self.assertIn("Профиль пользователя", context)
+        self.assertIn("старый диалог", context)
+
+    def test_infer_and_save_user_traits(self):
+        """Тест: вывод и сохранение черт пользователя."""
+        # Возвращаем мок к исходному состоянию
+        self.orchestrator._infer_and_save_user_traits.reset_mock()
+        # "Размокаем" метод для этого конкретного теста
+        self.orchestrator._infer_and_save_user_traits = Orchestrator._infer_and_save_user_traits.__get__(self.orchestrator)
+
+        # Настраиваем моки
+        mock_response = '[{"trait_type": "interest", "trait_description": "AI", "confidence": 80}]'
+        self.orchestrator.task_agent.process.return_value = mock_response
+
+        self.orchestrator._infer_and_save_user_traits("ввод", "ответ")
+
+        # Проверяем, что был вызван метод сохранения
+        self.orchestrator.memory.save_user_trait.assert_called_once_with(
+            trait_type="interest",
+            trait_description="AI",
+            confidence=80
+        )
+
 
 if __name__ == '__main__':
     unittest.main()

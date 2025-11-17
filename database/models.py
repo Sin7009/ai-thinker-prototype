@@ -57,6 +57,22 @@ class UserProfile(Base):
 # Добавьте обратную связь в User
 User.profile = relationship("UserProfile", uselist=False, back_populates="user")
 
+class UserTrait(Base):
+    __tablename__ = 'user_traits'
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey('users.id'))
+    trait_type = Column(String, index=True)  # e.g., 'preference', 'interest', 'communication_style'
+    trait_description = Column(Text)
+    confidence = Column(Integer) # Уверенность модели в этом выводе
+    source_dialogue_id = Column(Integer, ForeignKey('dialogue_entries.id'), nullable=True) # Откуда вывод
+    created_at = Column(DateTime(timezone=True), default=datetime.datetime.utcnow)
+
+    user = relationship("User", back_populates="traits")
+
+# Добавляем связь в User
+User.traits = relationship("UserTrait", back_populates="user")
+
 
 # --- Создание таблиц ---
 # Этот код будет выполнен при первом импорте, создавая таблицы, если их нет
