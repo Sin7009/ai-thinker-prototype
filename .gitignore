@@ -1,0 +1,21 @@
+# Папки Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Виртуальное окружение
+.venv/
+venv/
+env/
+
+# Файлы баз данных
+*.db
+*.sqlite3
+
+# ChromaDB storage
+chroma_storage/
+
+# Файлы IDE
+.idea/
+.vscode/

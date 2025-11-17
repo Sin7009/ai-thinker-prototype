@@ -1,0 +1,5 @@
+langchain-core
+langchain-gigachat
+langchain-community
+chromadb
+sqlalchemy
