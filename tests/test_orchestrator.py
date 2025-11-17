@@ -10,6 +10,7 @@ class TestOrchestrator(unittest.TestCase):
         self.orchestrator = Orchestrator(user_id_stub="test_user")
         # Мокаем (имитируем) внешние зависимости
         self.orchestrator.task_agent = MagicMock()
+        self.orchestrator.methodology_agent = MagicMock() # <-- Добавлен мок
         self.orchestrator.detector_agent = MagicMock()
         self.orchestrator.action_library = MagicMock()
         self.orchestrator.memory = MagicMock()
@@ -30,25 +31,31 @@ class TestOrchestrator(unittest.TestCase):
         self.assertEqual(self.orchestrator.partner_state, PartnerState.IDLE)
 
         response = self.orchestrator.process_input("Хочу начать")
-        self.assertIn("Пожалуйста, опишите проблему", response)
+        self.assertIn("опишите проблему или ситуацию", response) # <-- Исправленный текст
         self.assertEqual(self.orchestrator.partner_state, PartnerState.AWAITING_PROBLEM)
 
     def test_partner_mode_flow(self):
         """Тест: полный цикл прохождения по состояниям в режиме Партнера."""
         self.orchestrator.switch_mode(AgentMode.PARTNER)
 
+        # 1. Начало -> AWAITING_PROBLEM
         self.orchestrator.process_input("Начинаем")
         self.assertEqual(self.orchestrator.partner_state, PartnerState.AWAITING_PROBLEM)
 
-        self.orchestrator.action_library.run_deconstruction.return_value = "Факт 1, Факт 2"
-        response = self.orchestrator.process_input("Проблема такая-то")
-        self.assertIn("Факт 1, Факт 2", response)
-        self.assertEqual(self.orchestrator.partner_state, PartnerState.DECONSTRUCTION_COMPLETE)
+        # 2. Описание проблемы -> DECONSTRUCTION
+        self.orchestrator.methodology_agent.execute.return_value = "Ответ деконструкции"
+        response = self.orchestrator.process_input("Моя проблема в том, что все плохо")
+        self.assertEqual(self.orchestrator.partner_state, PartnerState.DECONSTRUCTION)
+        self.orchestrator.methodology_agent.execute.assert_called_once()
+        self.assertIn("Ответ деконструкции", response)
 
-        self.orchestrator.action_library.run_hypothesis_field.return_value = "Гипотеза А, Гипотеза Б"
-        response = self.orchestrator.process_input("да")
-        self.assertIn("Гипотеза А, Гипотеза Б", response)
-        self.assertEqual(self.orchestrator.partner_state, PartnerState.HYPOTHESIS_COMPLETE)
+        # 3. "дальше" -> HYPOTHESIS_FIELD
+        self.orchestrator.methodology_agent.reset_mock()
+        self.orchestrator.methodology_agent.execute.return_value = "Ответ генерации гипотез"
+        response = self.orchestrator.process_input("дальше")
+        self.assertEqual(self.orchestrator.partner_state, PartnerState.HYPOTHESIS_FIELD)
+        self.orchestrator.methodology_agent.execute.assert_called_once()
+        self.assertIn("Ответ генерации гипотез", response)
 
     def test_reset_partner_session(self):
         """Тест: сброс сессии в режиме Партнера."""

@@ -96,3 +96,10 @@ class MethodologyAgent:
         except Exception as e:
             print(f"Ошибка при обращении к GigaChat в MethodologyAgent: {e}")
             return "Извините, произошла ошибка при методологической обработке."
+
+    def clear_memory(self):
+        """Очищает историю диалога и векторную память."""
+        self.message_history = []
+        # Опционально: можно также очистить коллекцию в ChromaDB,
+        # но это может быть деструктивно. Пока ограничимся историей.
+        print(f"Память MethodologyAgent (история) очищена.")
