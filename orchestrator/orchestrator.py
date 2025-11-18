@@ -1,5 +1,6 @@
 import uuid
 import json
+import threading
 from agents.task_agent import TaskAgent
 from agents.detector_agent import DetectorAgent
 from agents.methodology_agent import MethodologyAgent
@@ -16,16 +17,48 @@ from .agent_mode import AgentMode
 class Orchestrator:
     def __init__(self, user_id_stub: str):
         self.user_id_stub = user_id_stub
-        self.memory = DynamicMemory(user_id_stub)
         self.task_agent = TaskAgent()
+        self.memory = DynamicMemory(user_id_stub, self.task_agent)
         self.methodology_agent = MethodologyAgent(user_id=user_id_stub)
         self.detector_agent = DetectorAgent()
         self.mode = AgentMode.COPILOT
         self.last_user_input = ""
         self.vector_collection = get_chroma_collection(f"dialogue_vector_{user_id_stub}")
-        # Новая инициализация ActionLibrary
         self.action_library = ActionLibrary(self.methodology_agent)
+        self.strategic_note = "" # Здесь будет храниться стратегия на сессию
         print(f"Оркестратор инициализирован для пользователя {user_id_stub}.")
+        self._develop_strategy() # Вырабатываем стратегию при старте
+
+    def _develop_strategy(self):
+        """
+        Анализирует историю сессий и формирует 'стратегическую заметку'
+        для улучшения качества ответов в текущей сессии.
+        """
+        recent_analyses = self.memory.get_recent_session_analyses(limit=5)
+        if not recent_analyses:
+            return # Стратегию не вырабатываем, если истории нет
+
+        history_summary = "\n".join(
+            [f"- Сессия от {a.ended_at.strftime('%Y-%m-%d')}: "
+             f"Темы ({a.key_topics}), Паттерны ({a.identified_patterns}). "
+             f"Резюме: {a.session_summary}" for a in recent_analyses]
+        )
+
+        strategy_prompt = f"""
+Ты — AI-стратег. Проанализируй историю сессий пользователя и дай короткую (1-2 предложения) тактическую рекомендацию для AI-ассистента на следующую сессию.
+
+История сессий:
+{history_summary}
+
+Пример рекомендации: "Пользователь часто возвращается к теме прокрастинации, но техники не помогают. В этот раз стоит попробовать обсудить его эмоции, а не искать решения."
+Твоя рекомендация:
+"""
+
+        try:
+            self.strategic_note = self.task_agent.process("", context_memory=strategy_prompt)
+            print(f"💡 Стратегическая заметка на сессию: {self.strategic_note}")
+        except Exception as e:
+            print(f"Ошибка при разработке стратегии: {e}")
 
     def _extract_name(self, text: str) -> str:
         """
@@ -156,19 +189,13 @@ class Orchestrator:
 
 
     
-    def process_input(self, text: str) -> str:
-        self.memory.save_interaction(text, is_user=True)
-        self.last_user_input = text
-
-        # 🚀 **Новый пайплайн обработки** 🚀
-
-        # 1. Психолингвистический анализ
+    def _run_analysis_in_background(self, text: str):
+        """
+        Запускает психолингвистический анализ в фоновом потоке
+        и сохраняет результаты в базу данных.
+        """
         try:
-            # DetectorAgent теперь возвращает dict, парсинг не нужен
             analysis_data = self.detector_agent.analyze(text)
-
-            # Сохраняем когнитивные искажения
-            # Проверяем, что ключ существует и его значение - список
             if 'cognitive_biases' in analysis_data and isinstance(analysis_data.get('cognitive_biases'), list):
                 for pattern in analysis_data['cognitive_biases']:
                     internal_name = RUSSIAN_TO_INTERNAL_BIAS_MAP.get(pattern.get('name'))
@@ -178,16 +205,23 @@ class Orchestrator:
                             confidence=pattern.get('confidence', 0),
                             context=pattern.get('context', '')
                         )
-
-            # Сохраняем тон и стиль
             self.memory.save_psycholinguistic_features(
                 emotional_tone=analysis_data.get('emotional_tone', 'Нейтральный'),
                 communication_style=analysis_data.get('communication_style', 'Аналитический')
             )
+        except Exception as e:
+            print(f"Ошибка в фоновом потоке анализа: {e}")
 
-        except TypeError as e:
-            # Эта ошибка может возникнуть, если analyze вернет не-словарь
-            print(f"Ошибка обработки ответа от DetectorAgent: {e}. Ответ: {analysis_data}")
+    def process_input(self, text: str) -> str:
+        self.memory.save_interaction(text, is_user=True)
+        self.last_user_input = text
+
+        # 🚀 **Новый пайплайн обработки** 🚀
+
+        # 1. Асинхронный психолингвистический анализ (Fire-and-Forget)
+        if len(text.split()) > 7:  # Порог на минимальную длину сообщения
+            analysis_thread = threading.Thread(target=self._run_analysis_in_background, args=(text,))
+            analysis_thread.start()
 
         # 2. Проверка на запрос о памяти
         if self._should_report_memory(text):
@@ -208,6 +242,10 @@ class Orchestrator:
             response = self.handle_copilot_mode(text)
         elif self.mode == AgentMode.PARTNER:
             response = self.handle_partner_mode(text)
+            # ПРОВЕРКА НА ВЫХОД ИЗ ТЕХНИКИ
+            if "[STOP_TECHNIQUE]" in response:
+                self.switch_mode(AgentMode.COPILOT)
+                response = "Хорошо, без проблем. Возвращаемся в обычный режим. Чем еще могу помочь?"
         else:
             response = "Ошибка: неизвестный режим работы."
 
@@ -245,9 +283,9 @@ class Orchestrator:
 
             for trait in inferred_traits:
                 if all(k in trait for k in ['trait_type', 'trait_description', 'confidence']):
-                    # Простое правило: сохраняем, только если уверенность > 70
-                    if trait['confidence'] > 70:
-                        self.memory.save_user_trait(
+                    # Пониженный порог для создания гипотезы
+                    if trait['confidence'] > 50:
+                        self.memory.reinforce_user_trait(
                             trait_type=trait['trait_type'],
                             trait_description=trait['trait_description'],
                             confidence=trait['confidence']
@@ -263,9 +301,15 @@ class Orchestrator:
     def _enrich_context(self, query: str) -> str:
         """
         Собирает и обогащает контекст для передачи в LLM.
-        Включает релевантные диалоги (RAG) и сводку профиля пользователя.
+        Включает стратегическую заметку, релевантные диалоги (RAG) и сводку профиля.
         """
-        # 1. RAG из ChromaDB
+        full_context = ""
+
+        # 1. Стратегическая заметка (если есть)
+        if self.strategic_note:
+            full_context += f"**Тактическая рекомендация на эту сессию:** {self.strategic_note}\n\n"
+
+        # 2. RAG из ChromaDB
         relevant_memories = self.memory.search_memories(query, n_results=3)
         rag_context = ""
         if relevant_memories:
@@ -273,11 +317,10 @@ class Orchestrator:
                 [f"- «{m}»" for m in relevant_memories]
             )
 
-        # 2. Сводка из SQLite
+        # 3. Сводка из SQLite
         profile_summary = self.memory.get_user_profile_summary()
 
-        # 3. Объединение
-        full_context = ""
+        # 4. Объединение
         if profile_summary:
             full_context += f"**Информация о пользователе:**\n{profile_summary}\n\n"
         if rag_context:
@@ -326,101 +369,76 @@ class Orchestrator:
         self.methodology_agent.clear_memory()
         print("Вся память агентов очищена.")
 
-    def summarize_session(self, last_user_input: str = "") -> str:
-        """Генерирует краткое резюме текущей сессии."""
+    def _analyze_and_save_session(self):
+        """
+        Проводит глубокий анализ завершенной сессии, извлекает ключевые темы и паттерны,
+        и сохраняет результат в базу данных.
+        """
+        # 1. Получаем историю диалога
+        messages = self.task_agent.memory.chat_memory.messages
+        if len(messages) < 4:
+            print("Недостаточно сообщений для анализа сессии.")
+            return
+
+        dialogue_history = "\n".join([f"{m.type}: {m.content}" for m in messages])
+
+        # 2. Формулируем промпт для LLM
+        analysis_prompt = f"""
+Ты — AI-аналитик. Проанализируй следующий диалог и верни СТРОГО JSON-объект со следующими ключами:
+- "session_summary": Краткое резюме диалога в 2-3 предложениях.
+- "key_topics": Список из 3-5 ключевых тем или слов, обсуждавшихся в диалоге (например, ["прокрастинация", "python", "тревожность"]).
+- "identified_patterns": Список внутренних названий когнитивных искажений, которые были замечены (например, ["catastrophizing", "overgeneralization"]).
+
+Диалог для анализа:
+{dialogue_history}
+"""
+
         try:
-            summary_prompt = (
-                "Ты — AI-методолог. Ниже приведён фрагмент нашего диалога. "
-                "Сделай краткое резюме: о чём шла речь, какие ключевые темы, эмоции, выводы. "
-                "Не более 2–3 предложений.\n\n"
-                f"Последний ввод пользователя: {last_user_input}\n"
-                f"Последние несколько реплик (из памяти):\n"
+            # 3. Вызываем LLM и парсим ответ
+            raw_response = self.task_agent.process("", context_memory=analysis_prompt)
+            analysis_result = json.loads(raw_response)
+
+            # 4. Сохраняем результат в базу
+            self.memory.save_session_analysis(
+                summary=analysis_result.get("session_summary", "Не удалось сгенерировать резюме."),
+                topics=analysis_result.get("key_topics", []),
+                patterns=analysis_result.get("identified_patterns", [])
             )
+            print("Анализ сессии успешно сохранен.")
+            self._report_cognitive_patterns()
 
-            # Взять последние N сообщений
-            recent_messages = self.task_agent.memory.chat_memory.messages[-6:]
-            recent_text = "\n".join([f"{m.type}: {m.content}" for m in recent_messages])
-
-            full_prompt = summary_prompt + recent_text
-
-            response = self.task_agent.chat.invoke([HumanMessage(content=full_prompt)])
-            return response.content.strip()
+        except (json.JSONDecodeError, TypeError) as e:
+            print(f"Ошибка парсинга JSON при анализе сессии: {e}. Ответ LLM: {raw_response}")
         except Exception as e:
-            print(f"Ошибка при генерации резюме: {e}")
-            return "Сессия была посвящена обсуждению личных и профессиональных вызовов."
+            print(f"Неожиданная ошибка при анализе сессии: {e}")
 
-    # orchestrator/orchestrator.py
+    def _report_cognitive_patterns(self):
+        """
+        Выводит в консоль отчет о динамике когнитивных паттернов.
+        """
+        print("\n📊 АНАЛИЗ КОГНИТИВНЫХ ПАТТЕРНОВ (динамика за 30 дней):")
 
-    def end_session(self):
-        """Генерирует резюме и анализирует прогресс по ВСЕМ когнитивным паттернам."""
-        try:
-            messages = self.task_agent.memory.chat_memory.messages
-            if not messages:
-                summary = "Обсуждались общие темы."
-            else:
-                recent = messages[-6:]
-                context = "\n".join([f"{m.type}: {m.content}" for m in recent])
-                prompt = (
-                    "Сделай краткое резюме нашего диалога (2–3 предложения). "
-                    "О чём шла речь? Какие темы, эмоции, выводы? "
-                    "Говори от третьего лица, без 'пользователь сказал'. "
-                    "Не используй шаблоны. Будь точен.\n\n"
-                    f"Последние реплики:\n{context}"
-                )
-                response = self.task_agent.chat.invoke([HumanMessage(content=prompt)])
-                summary = response.content.strip()
+        # Получаем все уникальные паттерны, которые когда-либо наблюдались у пользователя
+        all_patterns = self.memory.get_user_patterns()
+        unique_pattern_names = sorted(list({p.pattern_name for p in all_patterns}))
 
-            # 🔍 Анализ прогресса по ВСЕМ паттернам
-            print("📊 АНАЛИЗ КОГНИТИВНЫХ ПАТТЕРНОВ:")
-            active_patterns = [
-                "black_and_white_thinking",
-                "overgeneralization",
-                "catastrophizing",
-                "mind_reading",
-                "personalization",
-                "emotional_reasoning",
-                "hindsight_bias",
-                "availability_heuristic",
-                "status_quo_bias",
-                "gamblers_fallacy",
-                "survivorship_bias",
-                "false_consensus_effect",
-                "halo_effect"
-            ]
+        if not unique_pattern_names:
+            print("Паттерны пока не наблюдались.")
+            return
 
-            for pattern_name in active_patterns:
-                weight = self.memory.get_pattern_weight_over_time(pattern_name, window_days=30)
-                if weight > 0:
-                    bias_names = {
-                        "black_and_white_thinking": "Черно-белое мышление",
-                        "overgeneralization": "Сверхобобщение",
-                        "catastrophizing": "Катастрофизация",
-                        "mind_reading": "Чтение мыслей",
-                        "personalization": "Персонализация",
-                        "emotional_reasoning": "Эмоциональное обоснование",
-                        "hindsight_bias": "Ошибка ретроспективного взгляда",
-                        "availability_heuristic": "Эвристика доступности",
-                        "status_quo_bias": "Отклонение в сторону статуса кво",
-                        "gamblers_fallacy": "Ошибка игрока",
-                        "survivorship_bias": "Ошибка выжившего",
-                        "false_consensus_effect": "Эффект ложного консенсуса",
-                        "halo_effect": "Эффект ореола"
-                    }
-                    readable = bias_names.get(pattern_name, pattern_name)
-                    print(f"• {readable}: {weight}")
+        for pattern_name in unique_pattern_names:
+            weight = self.memory.get_pattern_weight_over_time(pattern_name, window_days=30)
+            if weight > 0:
+                # Получаем человекочитаемое имя
+                readable_name = next((rus_name for rus_name, internal_name in RUSSIAN_TO_INTERNAL_BIAS_MAP.items() if internal_name == pattern_name), pattern_name)
 
-                    # Прогресс
-                    if weight < 1.5:
-                        print(f"  ✅ Снижение — пользователь прогрессирует.")
-                    elif weight > 4.0:
-                        print(f"  ⚠️ Высокая частота — требуется внимание.")
-                    else:
-                        print(f"  🔁 Паттерн сохраняется — продолжаем работу.")
-
-            self.memory.save_session_summary(summary)
-        except Exception as e:
-            print(f"Ошибка при резюмировании: {e}")
-            self.memory.save_session_summary("Обсуждались личные и профессиональные темы.")
+                print(f"  • {readable_name}: {weight}")
+                if weight < 1.5:
+                    print("    ✅ Снижение — пользователь прогрессирует.")
+                elif weight > 4.0:
+                    print("    ⚠️ Высокая частота — требуется внимание.")
+                else:
+                    print("    🔁 Паттерн сохраняется — продолжаем работу.")
 
 
 

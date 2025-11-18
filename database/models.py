@@ -65,16 +65,33 @@ class UserTrait(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey('users.id'))
-    trait_type = Column(String, index=True)  # e.g., 'preference', 'interest', 'communication_style'
-    trait_description = Column(Text)
-    confidence = Column(Integer) # Уверенность модели в этом выводе
-    source_dialogue_id = Column(Integer, ForeignKey('dialogue_entries.id'), nullable=True) # Откуда вывод
+    trait_type = Column(String, index=True)
+    trait_description = Column(Text, unique=True) # Каждая черта должна быть уникальной
+    status = Column(String, default='hypothesis', index=True) # 'hypothesis' или 'fact'
+    confirmation_count = Column(Integer, default=1)
+    confidence = Column(Integer)
     created_at = Column(DateTime(timezone=True), default=datetime.datetime.utcnow)
+    updated_at = Column(DateTime(timezone=True), default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)
 
     user = relationship("User", back_populates="traits")
 
 # Добавляем связь в User
 User.traits = relationship("UserTrait", back_populates="user")
+
+class SessionAnalysis(Base):
+    __tablename__ = 'session_analyses'
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey('users.id'))
+    session_summary = Column(Text, nullable=False)
+    key_topics = Column(Text, nullable=True)  # e.g., "procrastination, python, anxiety"
+    identified_patterns = Column(Text, nullable=True) # e.g., "catastrophizing, black_and_white_thinking"
+    ended_at = Column(DateTime(timezone=True), default=datetime.datetime.utcnow)
+
+    user = relationship("User", back_populates="session_analyses")
+
+# Добавляем связь в User
+User.session_analyses = relationship("SessionAnalysis", back_populates="user")
 
 
 # --- Создание таблиц ---

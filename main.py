@@ -18,7 +18,7 @@ def main():
 
             # 💬 Обработка команд
             if user_input.lower() == '/exit':
-                orchestrator.end_session()
+                orchestrator._analyze_and_save_session()
                 print("Агент: До свидания! Был рад помочь.")
                 break
 

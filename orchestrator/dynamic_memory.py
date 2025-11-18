@@ -1,31 +1,25 @@
 # В начале файла
 from sqlalchemy.orm import Session
-from database.models import User, CognitivePattern, DialogueEntry, UserProfile, UserTrait
-from chromadb.utils.embedding_functions import SentenceTransformerEmbeddingFunction, DefaultEmbeddingFunction
-from database.db_connector import SessionLocal, chroma_client, get_chroma_collection, add_user_trait, get_user_traits
-from datetime import datetime, timedelta
+from database.models import User, CognitivePattern, DialogueEntry, UserProfile, UserTrait, SessionAnalysis
+from chromadb.utils.embedding_functions import SentenceTransformerEmbeddingFunction
+from database.db_connector import SessionLocal, get_chroma_collection, add_user_trait, get_user_traits
+from datetime import datetime
 from sqlalchemy import desc
-
-# Инициализация эмбеддингов
-embedding_function = SentenceTransformerEmbeddingFunction(
-    model_name="all-MiniLM-L6-v2"
-)
+# Импортируем TaskAgent для оценки значимости
+from agents.task_agent import TaskAgent
 
 
 class DynamicMemory:
-    def __init__(self, user_id_stub: str):
+    def __init__(self, user_id_stub: str, task_agent: TaskAgent):
         self.user_id_stub = user_id_stub
         self.db_session = SessionLocal()
+        self.task_agent = task_agent # Сохраняем экземпляр агента
 
         # Инициализация пользователя и профиля
         self.user = self._get_or_create_user()
 
-        # 🔥 Векторная память — история диалогов
+        # Векторная память — история диалогов
         self.vector_collection = get_chroma_collection(f"dialogue_vector_{user_id_stub}")
-
-        # ⚠️ history_collection — дубль? Если не используется в другом месте — можно убрать
-        # self.history_collection = get_chroma_collection(f"history_{user_id_stub}")
-
         print(f"Пользователь {user_id_stub} инициализирован.")
 
     def _init_vector_collection(self):
@@ -49,27 +43,53 @@ class DynamicMemory:
             user.profile = profile
         return user
 
-    def save_interaction(self, text: str, is_user: bool):
-        """Сохраняет взаимодействие в SQLite и вектор в ChromaDB."""
-        if not is_user:
-            return  # Сохраняем в вектор только реплики пользователя
+    def _is_significant(self, text: str) -> bool:
+        """
+        Оценивает информационную значимость сообщения с помощью LLM.
+        Возвращает True, если сообщение стоит сохранить в долгосрочную память.
+        """
+        # Простое правило: слишком короткие сообщения отсекаем сразу
+        if len(text.split()) < 3:
+            return False
 
+        prompt = (
+            "Оцени информационную плотность и важность следующего сообщения по шкале от 0.0 до 1.0. "
+            "Информативные сообщения, содержащие факты, вопросы, размышления или сильные эмоции, должны иметь высокий балл. "
+            "Простые приветствия, благодарности или ничего не значащие фразы ('ага', 'ок', 'не знаю') должны иметь низкий балл. "
+            "В ответ верни ТОЛЬКО число, например: 0.8"
+        )
         try:
-            # Сохранение в SQLite
+            response = self.task_agent.process(text, context_memory=prompt)
+            score = float(response.strip())
+            return score > 0.6
+        except (ValueError, TypeError):
+            # В случае ошибки от LLM, считаем сообщение незначимым
+            return False
+
+    def save_interaction(self, text: str, is_user: bool):
+        """
+        Сохраняет взаимодействие в SQLite, а в ChromaDB — только если оно
+        признано информационно значимым.
+        """
+        try:
+            # 1. Всегда сохраняем в SQLite для полной истории
             entry = DialogueEntry(user_id=self.user.id, is_user=is_user, content=text)
             self.db_session.add(entry)
             self.db_session.commit()
 
-            # 🔥 Сохранение в ChromaDB
-            self.vector_collection.add(
-                ids=[str(entry.id)],
-                documents=[text],
-                metadatas=[{
-                    "user_id": self.user.id,
-                    "type": "user_input",
-                    "timestamp": entry.timestamp.isoformat() if entry.timestamp else ""
-                }]
-            )
+            # 2. Сохраняем в векторную базу только значимые реплики пользователя
+            if is_user and self._is_significant(text):
+                self.vector_collection.add(
+                    ids=[str(entry.id)],
+                    documents=[text],
+                    metadatas=[{
+                        "user_id": self.user.id,
+                        "type": "user_input",
+                        "timestamp": entry.timestamp.isoformat() if entry.timestamp else ""
+                    }]
+                )
+                print(f"Сохранена значимая реплика в ChromaDB: '{text[:50]}...'")
+
         except Exception as e:
             self.db_session.rollback()
             print(f"Ошибка при сохранении взаимодействия: {e}")
@@ -233,19 +253,48 @@ class DynamicMemory:
 
         return " ".join(summary_parts) if summary_parts else "Пока что я мало о тебе знаю."
 
-    def save_user_trait(self, trait_type: str, trait_description: str, confidence: int):
-        """Сохраняет новую черту пользователя в БД."""
+    def reinforce_user_trait(self, trait_type: str, trait_description: str, confidence: int):
+        """
+        Сохраняет или усиливает "гипотезу" о черте пользователя.
+        Если гипотеза подтверждается достаточное количество раз, она становится "фактом".
+        """
         try:
-            add_user_trait(
-                db_session=self.db_session,
+            # Ищем существующую гипотезу
+            existing_trait = self.db_session.query(UserTrait).filter_by(
                 user_id=self.user.id,
-                trait_type=trait_type,
-                trait_description=trait_description,
-                confidence=confidence
-            )
-            print(f"✅ Сохранена черта '{trait_type}': {trait_description}")
+                trait_description=trait_description
+            ).first()
+
+            if existing_trait:
+                # Если нашли, и это все еще гипотеза, увеличиваем счетчик
+                if existing_trait.status == 'hypothesis':
+                    existing_trait.confirmation_count += 1
+                    existing_trait.confidence = max(existing_trait.confidence, confidence) # Обновляем уверенность
+
+                    # Проверяем, не пора ли сделать гипотезу фактом
+                    if existing_trait.confirmation_count >= 3:
+                        existing_trait.status = 'fact'
+                        print(f"🔥 Гипотеза подтверждена как факт: '{trait_description}'")
+                    else:
+                        print(f"🔄 Гипотеза усилена: '{trait_description}' (подтверждений: {existing_trait.confirmation_count})")
+            else:
+                # Если не нашли, создаем новую гипотезу
+                new_trait = UserTrait(
+                    user_id=self.user.id,
+                    trait_type=trait_type,
+                    trait_description=trait_description,
+                    confidence=confidence,
+                    status='hypothesis',
+                    confirmation_count=1
+                )
+                self.db_session.add(new_trait)
+                print(f"💡 Новая гипотеза: '{trait_description}'")
+
+            self.db_session.commit()
+
         except Exception as e:
-            print(f"❌ Ошибка при сохранении черты: {e}")
+            self.db_session.rollback()
+            print(f"❌ Ошибка при усилении черты пользователя: {e}")
 
     def get_user_traits_summary(self) -> str:
         """Возвращает форматированную строку с чертами пользователя."""
@@ -313,6 +362,31 @@ class DynamicMemory:
 
     def get_user_name(self) -> str:
         return self.user.profile.name if self.user.profile and self.user.profile.name else None
+
+    def save_session_analysis(self, summary: str, topics: list, patterns: list):
+        """
+        Сохраняет результаты анализа сессии в базу данных.
+        """
+        try:
+            analysis_entry = SessionAnalysis(
+                user_id=self.user.id,
+                session_summary=summary,
+                key_topics=", ".join(topics),
+                identified_patterns=", ".join(patterns)
+            )
+            self.db_session.add(analysis_entry)
+            self.db_session.commit()
+        except Exception as e:
+            self.db_session.rollback()
+            print(f"Ошибка при сохранении анализа сессии: {e}")
+
+    def get_recent_session_analyses(self, limit: int = 5) -> list:
+        """
+        Возвращает последние N записей анализа сессий для выработки стратегии.
+        """
+        return self.db_session.query(SessionAnalysis).filter_by(
+            user_id=self.user.id
+        ).order_by(desc(SessionAnalysis.ended_at)).limit(limit).all()
 
     def save_session_summary(self, summary: str):
         if not self.user.profile:

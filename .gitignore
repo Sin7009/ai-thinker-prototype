@@ -19,3 +19,4 @@ chroma_storage/
 # Файлы IDE
 .idea/
 .vscode/
+chroma_db/

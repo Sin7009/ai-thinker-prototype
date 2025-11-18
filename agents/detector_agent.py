@@ -4,7 +4,7 @@ import json
 import logging
 from langchain_community.chat_models import GigaChat
 from langchain_core.messages import SystemMessage, HumanMessage
-from agents.cognitive_biases import COGNITIVE_BIASES
+from knowledge_base.bias_store import CognitiveBiasStore
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -13,11 +13,11 @@ class DetectorAgent:
     """
     Интеллектуальный агент для диагностики когнитивных искажений (Контур Б).
     Использует LLM (GigaChat) для семантического анализа текста на основе
-    расширенной библиотеки когнитивных искажений.
+    библиотеки когнитивных искажений, подгружаемой через RAG.
     """
     def __init__(self):
         """
-        Инициализирует агента, модель GigaChat и формирует системный промпт.
+        Инициализирует агента, модель GigaChat и хранилище когнитивных искажений.
         """
         try:
             self.llm = GigaChat(
@@ -30,23 +30,35 @@ class DetectorAgent:
             logging.error(f"Ошибка при инициализации GigaChat в DetectorAgent: {e}")
             self.llm = None
 
-        self.system_prompt_template = self._create_system_prompt()
+        # Инициализация RAG-хранилища для искажений
+        try:
+            self.bias_store = CognitiveBiasStore()
+            logging.info("Хранилище когнитивных искажений (CognitiveBiasStore) инициализировано.")
+        except Exception as e:
+            logging.error(f"Ошибка при инициализации CognitiveBiasStore: {e}")
+            self.bias_store = None
 
-    def _create_system_prompt(self) -> str:
+
+    def _create_system_prompt(self, relevant_biases: list) -> str:
         """
-        Создает и кэширует системный промпт с полным списком когнитивных искажений.
+        Создает системный промпт с динамическим списком релевантных когнитивных искажений.
         """
-        biases_description = "\n".join([
-            f"- {bias['name']}: {bias['description']}"
-            for bias in COGNITIVE_BIASES
-        ])
+        if relevant_biases:
+            biases_description = "\n".join([
+                f"- {bias['name']}: {bias['description']}"
+                for bias in relevant_biases
+            ])
+            bias_instruction = f"""Проанализируй текст на наличие признаков когнитивных искажений из этого списка наиболее вероятных кандидатов:
+{biases_description}"""
+        else:
+            bias_instruction = "Проанализируй текст на наличие признаков любых известных когнитивных искажений. В твоем ответе могут быть искажения, даже если их нет в предоставленном списке."
+
 
         prompt = f"""
 Ты — опытный психолог-лингвист. Твоя задача — провести глубокий психолингвистический анализ текста пользователя по трем направлениям: когнитивные искажения, эмоциональный тон и стиль коммуникации.
 
 **1. Когнитивные искажения:**
-Проанализируй текст на наличие признаков когнитивных искажений из этого списка:
-{biases_description}
+{bias_instruction}
 
 **2. Эмоциональный тон:**
 Определи доминирующую эмоцию в тексте. Выбери ОДНУ из следующих: Нейтральный, Радость, Грусть, Гнев, Страх, Удивление, Неуверенность, Раздражение.
@@ -85,6 +97,7 @@ class DetectorAgent:
     def analyze(self, text: str) -> dict:
         """
         Анализирует текст на наличие когнитивных искажений, эмоционального тона и стиля коммуникации.
+        Использует RAG для поиска релевантных искажений перед отправкой запроса LLM.
         Возвращает словарь Python с комплексным результатом.
         """
         default_response = {
@@ -93,15 +106,21 @@ class DetectorAgent:
             "communication_style": "Аналитический"
         }
 
-        if not self.llm:
-            logging.error("LLM не была инициализирована. Анализ невозможен.")
+        if not self.llm or not self.bias_store:
+            logging.error("LLM или CognitiveBiasStore не были инициализированы. Анализ невозможен.")
             return default_response
 
         if not text:
             return default_response
 
+        # 1. RAG-поиск релевантных искажений
+        relevant_biases = self.bias_store.query_biases(text, n_results=5)
+
+        # 2. Создание динамического промпта
+        system_prompt = self._create_system_prompt(relevant_biases)
+
         messages = [
-            SystemMessage(content=self.system_prompt_template),
+            SystemMessage(content=system_prompt),
             HumanMessage(content=f"Проанализируй этот текст: \"{text}\"")
         ]
 

@@ -5,6 +5,7 @@ from orchestrator.action_library import ActionLibrary
 from agents.methodology_agent import MethodologyAgent
 from database.db_connector import recreate_tables
 import json
+import time
 
 # Пересоздаем таблицы перед запуском всех тестов
 recreate_tables()
@@ -13,25 +14,23 @@ class TestOrchestrator(unittest.TestCase):
     def setUp(self):
         """
         Настраиваем окружение для тестирования с использованием "обезьяньего патчинга".
-        Это самый надежный способ для данной архитектуры.
         """
-        # 1. Создаем реальный экземпляр Оркестратора.
-        #    Он, в свою очередь, создаст реальные экземпляры агентов и ActionLibrary.
-        self.orchestrator = Orchestrator(user_id_stub="test_user")
+        with patch('orchestrator.orchestrator.DynamicMemory') as mock_dynamic_memory:
+            # Предотвращаем реальное создание DynamicMemory
+            self.orchestrator = Orchestrator(user_id_stub="test_user")
+            self.orchestrator.memory = mock_dynamic_memory.return_value
 
-        # 2. Создаем моки для всех зависимостей, которые мы хотим контролировать.
         self.mock_task_agent = MagicMock()
         self.mock_methodology_agent = MagicMock()
         self.mock_detector_agent = MagicMock()
-        self.mock_memory = MagicMock()
+        self.mock_memory = self.orchestrator.memory # Используем замоканный экземпляр
 
-        # 3. Заменяем реальные объекты на моки.
         self.orchestrator.task_agent = self.mock_task_agent
         self.orchestrator.detector_agent = self.mock_detector_agent
-        self.orchestrator.memory = self.mock_memory
 
-        # КЛЮЧЕВОЙ МОМЕНТ: Заменяем methodology_agent внутри уже созданного
-        # экземпляра action_library, который принадлежит Оркестратору.
+        # Мокируем process, чтобы он возвращал валидный JSON-список
+        self.mock_task_agent.process.return_value = '[]'
+
         self.orchestrator.action_library.methodology_agent = self.mock_methodology_agent
 
     def test_full_thinking_cycle(self):
@@ -59,17 +58,20 @@ class TestOrchestrator(unittest.TestCase):
         technique_call = self.mock_methodology_agent.invoke.call_args
         self.assertIn("Твоя роль — коуч, использующий технику 'Пять почему'", str(technique_call.args[0]))
 
-    def test_analysis_data_is_parsed_and_saved(self):
+    @patch('threading.Thread.start')
+    def test_analysis_data_is_parsed_and_saved(self, mock_thread_start):
         """Тест: Оркестратор парсит комплексный JSON и сохраняет все данные."""
         mock_analysis_data = {
             "cognitive_biases": [{"name": "Катастрофизация", "confidence": 90, "context": "Контекст..."}],
             "emotional_tone": "Тревога",
             "communication_style": "Эмоциональный"
         }
-        self.mock_detector_agent.analyze.return_value = json.dumps(mock_analysis_data)
+        # Мокируем analyze, чтобы он возвращал словарь, а не строку
+        self.mock_detector_agent.analyze.return_value = mock_analysis_data
 
         with patch('orchestrator.orchestrator.RUSSIAN_TO_INTERNAL_BIAS_MAP', {'Катастрофизация': 'catastrophizing'}):
-            self.orchestrator.process_input("Все ужасно, я провалюсь")
+             # Вызываем внутренний метод напрямую, минуя поток
+            self.orchestrator._run_analysis_in_background("Все ужасно, я провалюсь, это конец света")
 
         self.mock_memory.save_cognitive_pattern.assert_called_once_with(
             pattern_name='catastrophizing', confidence=90, context="Контекст..."
