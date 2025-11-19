@@ -15,7 +15,7 @@ class DetectorAgent:
     Использует LLM (GigaChat) для семантического анализа текста на основе
     библиотеки когнитивных искажений, подгружаемой через RAG.
     """
-    def __init__(self):
+    def __init__(self, model_name: str = "GigaChat-2"):
         """
         Инициализирует агента, модель GigaChat и хранилище когнитивных искажений.
         """
@@ -23,7 +23,9 @@ class DetectorAgent:
             self.llm = GigaChat(
                 credentials=os.environ.get("GIGACHAT_CREDENTIALS"),
                 verify_ssl_certs=False,
-                scope="GIGACHAT_API_PERS"
+                scope="GIGACHAT_API_PERS",
+                model=model_name,
+                temperature=0.01
             )
             logging.info("DetectorAgent (LLM-based) инициализирован успешно.")
         except Exception as e:

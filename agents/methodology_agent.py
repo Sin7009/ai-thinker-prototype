@@ -14,7 +14,7 @@ class MethodologyAgent:
     Агент для выполнения сложных методологических задач (режим "Партнер").
     Использует GigaChat с продвинутыми техниками рассуждений и контекстной памятью.
     """
-    def __init__(self, user_id: str = "default_user"):
+    def __init__(self, user_id: str = "default_user", model_name: str = "GigaChat-2-Pro"):
         if 'GIGACHAT_CREDENTIALS' not in os.environ:
             raise ValueError("Переменная окружения GIGACHAT_CREDENTIALS не установлена.")
 
@@ -22,7 +22,7 @@ class MethodologyAgent:
             credentials=os.environ['GIGACHAT_CREDENTIALS'],
             verify_ssl_certs=False,
             scope='GIGACHAT_API_PERS',
-            model='GigaChat-Pro',
+            model=model_name,
             temperature=0.7
         )
 

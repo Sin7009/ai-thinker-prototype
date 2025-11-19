@@ -12,7 +12,7 @@ class TaskAgent:
     Агент для выполнения конкретных задач (режим "Копилот").
     Использует GigaChat с поддержкой контекстной памяти.
     """
-    def __init__(self, system_prompt: str = None):
+    def __init__(self, system_prompt: str = None, model_name: str = "GigaChat-2"):
         if 'GIGACHAT_CREDENTIALS' not in os.environ:
             raise ValueError("Переменная окружения GIGACHAT_CREDENTIALS не установлена.")
 
@@ -20,7 +20,7 @@ class TaskAgent:
             credentials=os.environ['GIGACHAT_CREDENTIALS'],
             verify_ssl_certs=False,
             scope='GIGACHAT_API_PERS',
-            model='GigaChat-Pro',  # Лучше качество
+            model=model_name,
             temperature=0.7
         )
 

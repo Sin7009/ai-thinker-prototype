@@ -14,13 +14,21 @@ from langchain_core.messages import HumanMessage, SystemMessage
 
 from .agent_mode import AgentMode
 
+# Актуальные модели второго поколения
+MODEL_LITE = "GigaChat-2"
+MODEL_SMART = "GigaChat-2-Pro"
+MODEL_MAX = "GigaChat-2-Max"
+
 class Orchestrator:
     def __init__(self, user_id_stub: str):
         self.user_id_stub = user_id_stub
-        self.task_agent = TaskAgent()
+
+        # --- РОУТИНГ МОДЕЛЕЙ ---
+        self.task_agent = TaskAgent(model_name=MODEL_LITE)
+        self.detector_agent = DetectorAgent(model_name=MODEL_LITE)
+        self.methodology_agent = MethodologyAgent(user_id=user_id_stub, model_name=MODEL_SMART)
+
         self.memory = DynamicMemory(user_id_stub, self.task_agent)
-        self.methodology_agent = MethodologyAgent(user_id=user_id_stub)
-        self.detector_agent = DetectorAgent()
         self.mode = AgentMode.COPILOT
         self.last_user_input = ""
         self.vector_collection = get_chroma_collection(f"dialogue_vector_{user_id_stub}")
