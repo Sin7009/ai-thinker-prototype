@@ -50,6 +50,7 @@ class UserProfile(Base):
     user_id = Column(Integer, ForeignKey('users.id'), unique=True)
     name = Column(String, nullable=True)
     last_session_summary = Column(Text, nullable=True)
+    long_term_summary = Column(Text, nullable=True)
     # Новые поля для психолингвистического анализа
     last_emotional_tone = Column(String, nullable=True)
     dominant_communication_style = Column(String, nullable=True)

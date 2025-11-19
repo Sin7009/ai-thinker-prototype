@@ -1,6 +1,5 @@
-langchain-core
-langchain-gigachat
+langchain
 langchain-community
+langchain-gigachat
 chromadb
-sqlalchemy
-sentence-transformers
+sentence_transformers

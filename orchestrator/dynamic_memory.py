@@ -2,7 +2,7 @@
 from sqlalchemy.orm import Session
 from database.models import User, CognitivePattern, DialogueEntry, UserProfile, UserTrait, SessionAnalysis
 from chromadb.utils.embedding_functions import SentenceTransformerEmbeddingFunction
-from database.db_connector import SessionLocal, get_chroma_collection, add_user_trait, get_user_traits
+from database.db_connector import SessionLocal, get_chroma_collection, add_user_trait, get_user_traits, session_scope
 from datetime import datetime
 from sqlalchemy import desc
 # Импортируем TaskAgent для оценки значимости
@@ -12,7 +12,6 @@ from agents.task_agent import TaskAgent
 class DynamicMemory:
     def __init__(self, user_id_stub: str, task_agent: TaskAgent):
         self.user_id_stub = user_id_stub
-        self.db_session = SessionLocal()
         self.task_agent = task_agent # Сохраняем экземпляр агента
 
         # Инициализация пользователя и профиля
@@ -31,17 +30,17 @@ class DynamicMemory:
         )
 
     def _get_or_create_user(self):
-        user = self.db_session.query(User).filter_by(user_id_stub=self.user_id_stub).first()
-        if not user:
-            user = User(user_id_stub=self.user_id_stub)
-            self.db_session.add(user)
-            self.db_session.commit()
-        if not user.profile:
-            profile = UserProfile(user_id=user.id)
-            self.db_session.add(profile)
-            self.db_session.commit()
-            user.profile = profile
-        return user
+        with session_scope() as session:
+            user = session.query(User).filter_by(user_id_stub=self.user_id_stub).first()
+            if not user:
+                user = User(user_id_stub=self.user_id_stub)
+                session.add(user)
+                session.flush()  # Ensures user.id is available
+            if not user.profile:
+                profile = UserProfile(user_id=user.id)
+                session.add(profile)
+                user.profile = profile
+            return user
 
     def _is_significant(self, text: str) -> bool:
         """
@@ -71,44 +70,49 @@ class DynamicMemory:
         Сохраняет взаимодействие в SQLite, а в ChromaDB — только если оно
         признано информационно значимым.
         """
-        try:
-            # 1. Всегда сохраняем в SQLite для полной истории
-            entry = DialogueEntry(user_id=self.user.id, is_user=is_user, content=text)
-            self.db_session.add(entry)
-            self.db_session.commit()
+        with session_scope() as session:
+            try:
+                # 1. Всегда сохраняем в SQLite для полной истории
+                entry = DialogueEntry(user_id=self.user.id, is_user=is_user, content=text)
+                session.add(entry)
+                session.flush() # To get entry.id
 
-            # 2. Сохраняем в векторную базу только значимые реплики пользователя
-            if is_user and self._is_significant(text):
-                self.vector_collection.add(
-                    ids=[str(entry.id)],
-                    documents=[text],
-                    metadatas=[{
-                        "user_id": self.user.id,
-                        "type": "user_input",
-                        "timestamp": entry.timestamp.isoformat() if entry.timestamp else ""
-                    }]
-                )
-                print(f"Сохранена значимая реплика в ChromaDB: '{text[:50]}...'")
+                # После сохранения проверяем, не пора ли суммаризировать
+                if is_user: # Суммаризацию запускаем только после реплики пользователя
+                    self.summarize_old_dialogues()
 
-        except Exception as e:
-            self.db_session.rollback()
-            print(f"Ошибка при сохранении взаимодействия: {e}")
+                # 2. Сохраняем в векторную базу только значимые реплики пользователя
+                if is_user and self._is_significant(text):
+                    self.vector_collection.add(
+                        ids=[str(entry.id)],
+                        documents=[text],
+                        metadatas=[{
+                            "user_id": self.user.id,
+                            "type": "user_input",
+                            "timestamp": entry.timestamp.isoformat() if entry.timestamp else ""
+                        }]
+                    )
+                    print(f"Сохранена значимая реплика в ChromaDB: '{text[:50]}...'")
+
+            except Exception as e:
+                print(f"Ошибка при сохранении взаимодействия: {e}")
+                raise
 
     def save_cognitive_pattern(self, pattern_name: str, confidence: int, context: str):
         """Сохраняет обнаруженный когнитивный паттерн в базу данных."""
-        try:
-            new_pattern = CognitivePattern(
-                user_id=self.user.id,
-                pattern_name=pattern_name,
-                confidence_score=confidence,
-                context=context
-            )
-            self.db_session.add(new_pattern)
-            self.db_session.commit()
-            print(f"✅ Сохранён паттерн '{pattern_name}' (уверенность: {confidence})")
-        except Exception as e:
-            self.db_session.rollback()
-            print(f"❌ Ошибка при сохранении паттерна: {e}")
+        with session_scope() as session:
+            try:
+                new_pattern = CognitivePattern(
+                    user_id=self.user.id,
+                    pattern_name=pattern_name,
+                    confidence_score=confidence,
+                    context=context
+                )
+                session.add(new_pattern)
+                print(f"✅ Сохранён паттерн '{pattern_name}' (уверенность: {confidence})")
+            except Exception as e:
+                print(f"❌ Ошибка при сохранении паттерна: {e}")
+                raise
 
     
     def search_memories(self, query: str, n_results: int = 3) -> list:
@@ -132,40 +136,44 @@ class DynamicMemory:
 
     def get_pattern_frequency(self, pattern_name: str) -> int:
         """Возвращает количество раз, сколько встречался паттерн."""
-        count = self.db_session.query(CognitivePattern).filter_by(
-            user_id=self.user.id,
-            pattern_name=pattern_name
-        ).count()
-        return count
+        with session_scope() as session:
+            count = session.query(CognitivePattern).filter_by(
+                user_id=self.user.id,
+                pattern_name=pattern_name
+            ).count()
+            return count
 
     def get_user_patterns(self):
         """Возвращает все когнитивные паттерны для текущего пользователя."""
         try:
-            return self.db_session.query(CognitivePattern).filter_by(user_id=self.user.id).all()
+            with session_scope() as session:
+                return session.query(CognitivePattern).filter_by(user_id=self.user.id).all()
         except Exception as e:
             print(f"Ошибка при получении паттернов: {e}")
             return []
 
     def get_pattern_weight(self, pattern_name: str) -> float:
-        patterns = self.db_session.query(CognitivePattern).filter(...).all()
-        weight = 0
-        for p in patterns:
-            days_ago = (datetime.utcnow() - p.observed_at).days
-            decay = 0.9 ** (days_ago / 7)  # Затухание на 10% в неделю
-            weight += decay
-        return weight
+        with session_scope() as session:
+            patterns = session.query(CognitivePattern).filter(...).all()
+            weight = 0
+            for p in patterns:
+                days_ago = (datetime.utcnow() - p.observed_at).days
+                decay = 0.9 ** (days_ago / 7)  # Затухание на 10% в неделю
+                weight += decay
+            return weight
 
     def get_pattern_weight_over_time(self, pattern_name: str, window_days: int = 30):
         """
         Возвращает "вес" паттерна за последние N дней с учётом затухания.
         Используется для отслеживания прогресса (ЗБР).
         """
-        patterns = (
-            self.db_session.query(CognitivePattern)
-            .filter_by(user_id=self.user.id, pattern_name=pattern_name)
-            .order_by(CognitivePattern.observed_at)
-            .all()
-        )
+        with session_scope() as session:
+            patterns = (
+                session.query(CognitivePattern)
+                .filter_by(user_id=self.user.id, pattern_name=pattern_name)
+                .order_by(CognitivePattern.observed_at)
+                .all()
+            )
 
         if not patterns:
             return 0.0
@@ -187,25 +195,27 @@ class DynamicMemory:
         Возвращает последние N наблюдений за паттерном.
         Полезно для анализа динамики.
         """
-        patterns = (
-            self.db_session.query(CognitivePattern)
-            .filter_by(user_id=self.user.id, pattern_name=pattern_name)
-            .order_by(desc(CognitivePattern.observed_at))
-            .limit(limit)
-            .all()
-        )
-        return patterns
+        with session_scope() as session:
+            patterns = (
+                session.query(CognitivePattern)
+                .filter_by(user_id=self.user.id, pattern_name=pattern_name)
+                .order_by(desc(CognitivePattern.observed_at))
+                .limit(limit)
+                .all()
+            )
+            return patterns
 
     def get_pattern_frequency(self, pattern_name: str) -> int:
         """
         Возвращает общее количество наблюдений за паттерном.
         Уже есть — оставляем как есть.
         """
-        count = self.db_session.query(CognitivePattern).filter_by(
-            user_id=self.user.id,
-            pattern_name=pattern_name
-        ).count()
-        return count
+        with session_scope() as session:
+            count = session.query(CognitivePattern).filter_by(
+                user_id=self.user.id,
+                pattern_name=pattern_name
+            ).count()
+            return count
 
     def get_user_profile_summary(self) -> str:
         """Возвращает краткое резюме того, что знает о пользователе."""
@@ -222,23 +232,24 @@ class DynamicMemory:
             summary_parts.append(f"В прошлый раз мы говорили о: {last_summary}")
 
         # Паттерны
-        patterns = self.get_user_patterns()
-        if patterns:
-            unique_biases = {p.pattern_name for p in patterns}
-            bias_names = {
-                "black_and_white_thinking": "черно-белое мышление",
-                "catastrophizing": "катастрофизация",
-                "overgeneralization": "чрезмерное обобщение",
-                "personalization": "персонализация"
-            }
-            human_biases = [bias_names.get(b, b) for b in unique_biases]
-            if human_biases:
-                summary_parts.append(f"Я отмечал у тебя паттерны: {', '.join(human_biases)}.")
+        with session_scope() as session:
+            patterns = self.get_user_patterns()
+            if patterns:
+                unique_biases = {p.pattern_name for p in patterns}
+                bias_names = {
+                    "black_and_white_thinking": "черно-белое мышление",
+                    "catastrophizing": "катастрофизация",
+                    "overgeneralization": "чрезмерное обобщение",
+                    "personalization": "персонализация"
+                }
+                human_biases = [bias_names.get(b, b) for b in unique_biases]
+                if human_biases:
+                    summary_parts.append(f"Я отмечал у тебя паттерны: {', '.join(human_biases)}.")
 
-        # Число диалогов
-        recent_messages = self.db_session.query(DialogueEntry).filter_by(user_id=self.user.id).count()
-        if recent_messages > 0:
-            summary_parts.append(f"Мы уже обменялись {recent_messages} сообщениями.")
+            # Число диалогов
+            recent_messages = session.query(DialogueEntry).filter_by(user_id=self.user.id).count()
+            if recent_messages > 0:
+                summary_parts.append(f"Мы уже обменялись {recent_messages} сообщениями.")
 
         # Черты пользователя
         traits_summary = self.get_user_traits_summary()
@@ -258,59 +269,59 @@ class DynamicMemory:
         Сохраняет или усиливает "гипотезу" о черте пользователя.
         Если гипотеза подтверждается достаточное количество раз, она становится "фактом".
         """
-        try:
-            # Ищем существующую гипотезу
-            existing_trait = self.db_session.query(UserTrait).filter_by(
-                user_id=self.user.id,
-                trait_description=trait_description
-            ).first()
-
-            if existing_trait:
-                # Если нашли, и это все еще гипотеза, увеличиваем счетчик
-                if existing_trait.status == 'hypothesis':
-                    existing_trait.confirmation_count += 1
-                    existing_trait.confidence = max(existing_trait.confidence, confidence) # Обновляем уверенность
-
-                    # Проверяем, не пора ли сделать гипотезу фактом
-                    if existing_trait.confirmation_count >= 3:
-                        existing_trait.status = 'fact'
-                        print(f"🔥 Гипотеза подтверждена как факт: '{trait_description}'")
-                    else:
-                        print(f"🔄 Гипотеза усилена: '{trait_description}' (подтверждений: {existing_trait.confirmation_count})")
-            else:
-                # Если не нашли, создаем новую гипотезу
-                new_trait = UserTrait(
+        with session_scope() as session:
+            try:
+                # Ищем существующую гипотезу
+                existing_trait = session.query(UserTrait).filter_by(
                     user_id=self.user.id,
-                    trait_type=trait_type,
-                    trait_description=trait_description,
-                    confidence=confidence,
-                    status='hypothesis',
-                    confirmation_count=1
-                )
-                self.db_session.add(new_trait)
-                print(f"💡 Новая гипотеза: '{trait_description}'")
+                    trait_description=trait_description
+                ).first()
 
-            self.db_session.commit()
+                if existing_trait:
+                    # Если нашли, и это все еще гипотеза, увеличиваем счетчик
+                    if existing_trait.status == 'hypothesis':
+                        existing_trait.confirmation_count += 1
+                        existing_trait.confidence = max(existing_trait.confidence, confidence) # Обновляем уверенность
 
-        except Exception as e:
-            self.db_session.rollback()
-            print(f"❌ Ошибка при усилении черты пользователя: {e}")
+                        # Проверяем, не пора ли сделать гипотезу фактом
+                        if existing_trait.confirmation_count >= 3:
+                            existing_trait.status = 'fact'
+                            print(f"🔥 Гипотеза подтверждена как факт: '{trait_description}'")
+                        else:
+                            print(f"🔄 Гипотеза усилена: '{trait_description}' (подтверждений: {existing_trait.confirmation_count})")
+                else:
+                    # Если не нашли, создаем новую гипотезу
+                    new_trait = UserTrait(
+                        user_id=self.user.id,
+                        trait_type=trait_type,
+                        trait_description=trait_description,
+                        confidence=confidence,
+                        status='hypothesis',
+                        confirmation_count=1
+                    )
+                    session.add(new_trait)
+                    print(f"💡 Новая гипотеза: '{trait_description}'")
+
+            except Exception as e:
+                print(f"❌ Ошибка при усилении черты пользователя: {e}")
+                raise
 
     def get_user_traits_summary(self) -> str:
         """Возвращает форматированную строку с чертами пользователя."""
-        try:
-            traits = get_user_traits(self.db_session, self.user.id)
-            if not traits:
+        with session_scope() as session:
+            try:
+                traits = get_user_traits(session, self.user.id)
+                if not traits:
+                    return ""
+
+                summary_parts = []
+                for trait in traits:
+                    summary_parts.append(f"[{trait.trait_type.capitalize()}] {trait.trait_description}")
+
+                return "Наблюдаемые черты: " + "; ".join(summary_parts) + "."
+            except Exception as e:
+                print(f"Ошибка при получении черт: {e}")
                 return ""
-
-            summary_parts = []
-            for trait in traits:
-                summary_parts.append(f"[{trait.trait_type.capitalize()}] {trait.trait_description}")
-
-            return "Наблюдаемые черты: " + "; ".join(summary_parts) + "."
-        except Exception as e:
-            print(f"Ошибка при получении черт: {e}")
-            return ""
 
     def get_full_profile_context(self) -> str:
         """
@@ -329,36 +340,37 @@ class DynamicMemory:
         if last_summary:
             summary_parts.append(f"В прошлый раз мы говорили о: {last_summary}")
 
-        # 3. Когнитивные паттерны
-        patterns = self.get_user_patterns()
-        if patterns:
-            unique_biases = {p.pattern_name for p in patterns}
-            bias_names = {
-                "black_and_white_thinking": "черно-белое мышление",
-                "catastrophizing": "катастрофизация",
-                "overgeneralization": "чрезмерное обобщение",
-                "personalization": "персонализация",
-                "hindsight_bias": "ошибка ретроспективного взгляда",
-                "emotional_reasoning": "эмоциональное обоснование",
-                "mind_reading": "чтение мыслей"
-            }
-            human_biases = [bias_names.get(b, b) for b in sorted(unique_biases)]
-            if human_biases:
-                summary_parts.append(f"Я отмечал у тебя паттерны: {', '.join(human_biases)}.")
+        with session_scope() as session:
+            # 3. Когнитивные паттерны
+            patterns = self.get_user_patterns()
+            if patterns:
+                unique_biases = {p.pattern_name for p in patterns}
+                bias_names = {
+                    "black_and_white_thinking": "черно-белое мышление",
+                    "catastrophizing": "катастрофизация",
+                    "overgeneralization": "чрезмерное обобщение",
+                    "personalization": "персонализация",
+                    "hindsight_bias": "ошибка ретроспективного взгляда",
+                    "emotional_reasoning": "эмоциональное обоснование",
+                    "mind_reading": "чтение мыслей"
+                }
+                human_biases = [bias_names.get(b, b) for b in sorted(unique_biases)]
+                if human_biases:
+                    summary_parts.append(f"Я отмечал у тебя паттерны: {', '.join(human_biases)}.")
 
-        # 4. Активность
-        message_count = self.db_session.query(DialogueEntry).filter_by(user_id=self.user.id).count()
-        if message_count > 0:
-            summary_parts.append(f"Мы уже обменялись {message_count} сообщениями.")
+            # 4. Активность
+            message_count = session.query(DialogueEntry).filter_by(user_id=self.user.id).count()
+            if message_count > 0:
+                summary_parts.append(f"Мы уже обменялись {message_count} сообщениями.")
 
         return " ".join(summary_parts) if summary_parts else "Пока что я мало о тебе знаю."
 
     def save_user_name(self, name: str):
-        if not self.user.profile:
-            self.user.profile = UserProfile(user_id=self.user.id)
-            self.db_session.add(self.user.profile)
-        self.user.profile.name = name
-        self.db_session.commit()
+        with session_scope() as session:
+            if not self.user.profile:
+                self.user.profile = UserProfile(user_id=self.user.id)
+                session.add(self.user.profile)
+            self.user.profile.name = name
 
     def get_user_name(self) -> str:
         return self.user.profile.name if self.user.profile and self.user.profile.name else None
@@ -367,54 +379,100 @@ class DynamicMemory:
         """
         Сохраняет результаты анализа сессии в базу данных.
         """
-        try:
-            analysis_entry = SessionAnalysis(
-                user_id=self.user.id,
-                session_summary=summary,
-                key_topics=", ".join(topics),
-                identified_patterns=", ".join(patterns)
-            )
-            self.db_session.add(analysis_entry)
-            self.db_session.commit()
-        except Exception as e:
-            self.db_session.rollback()
-            print(f"Ошибка при сохранении анализа сессии: {e}")
+        with session_scope() as session:
+            try:
+                analysis_entry = SessionAnalysis(
+                    user_id=self.user.id,
+                    session_summary=summary,
+                    key_topics=", ".join(topics),
+                    identified_patterns=", ".join(patterns)
+                )
+                session.add(analysis_entry)
+            except Exception as e:
+                print(f"Ошибка при сохранении анализа сессии: {e}")
+                raise
 
     def get_recent_session_analyses(self, limit: int = 5) -> list:
         """
         Возвращает последние N записей анализа сессий для выработки стратегии.
         """
-        return self.db_session.query(SessionAnalysis).filter_by(
-            user_id=self.user.id
-        ).order_by(desc(SessionAnalysis.ended_at)).limit(limit).all()
+        with session_scope() as session:
+            return session.query(SessionAnalysis).filter_by(
+                user_id=self.user.id
+            ).order_by(desc(SessionAnalysis.ended_at)).limit(limit).all()
 
     def save_session_summary(self, summary: str):
-        if not self.user.profile:
-            self.user.profile = UserProfile(user_id=self.user.id)
-            self.db_session.add(self.user.profile)
-        self.user.profile.last_session_summary = summary
-        self.db_session.commit()
+        with session_scope() as session:
+            if not self.user.profile:
+                self.user.profile = UserProfile(user_id=self.user.id)
+                session.add(self.user.profile)
+            self.user.profile.last_session_summary = summary
 
     def get_last_session_summary(self) -> str:
         return self.user.profile.last_session_summary if self.user.profile and self.user.profile.last_session_summary else None
+
+    def summarize_old_dialogues(self, window_size: int = 20, summarization_threshold: int = 50):
+        """
+        Проверяет количество диалоговых записей и, если оно превышает порог,
+        суммаризирует самые старые из них.
+        """
+        with session_scope() as session:
+            dialogue_count = session.query(DialogueEntry).filter_by(user_id=self.user.id).count()
+
+            if dialogue_count > summarization_threshold:
+                # 1. Получаем самые старые записи для суммаризации
+                entries_to_summarize = (
+                    session.query(DialogueEntry)
+                    .filter_by(user_id=self.user.id)
+                    .order_by(DialogueEntry.timestamp)
+                    .limit(window_size)
+                    .all()
+                )
+
+                if not entries_to_summarize:
+                    return
+
+                # 2. Создаем текст для суммаризации
+                dialogue_text = "\n".join(
+                    [f"{'User' if e.is_user else 'Agent'}: {e.content}" for e in entries_to_summarize]
+                )
+
+                # 3. Вызываем LLM для создания саммари
+                summary_prompt = (
+                    "Суммаризируй следующий диалог в одно-два предложения, сохранив ключевые темы и выводы. "
+                    "Это саммари будет использоваться как долгосрочная память."
+                )
+                summary = self.task_agent.process(dialogue_text, context_memory=summary_prompt)
+
+                # 4. Добавляем саммари в профиль пользователя
+                if not self.user.profile:
+                    self.user.profile = UserProfile(user_id=self.user.id)
+                    session.add(self.user.profile)
+
+                # Обновляем long_term_summary, добавляя новое саммари к существующему
+                existing_summary = self.user.profile.long_term_summary or ""
+                self.user.profile.long_term_summary = f"{existing_summary}\n- {summary}".strip()
+
+                # 5. Удаляем старые записи
+                for entry in entries_to_summarize:
+                    session.delete(entry)
+
+                print(f"✅ Суммаризировано и удалено {len(entries_to_summarize)} старых записей диалога.")
+
 
     def save_psycholinguistic_features(self, emotional_tone: str, communication_style: str):
         """
         Сохраняет последние психолингвистические метрики в профиль пользователя.
         """
-        try:
-            if not self.user.profile:
-                # На всякий случай, если профиль еще не создан
-                self.user.profile = UserProfile(user_id=self.user.id)
-                self.db_session.add(self.user.profile)
+        with session_scope() as session:
+            try:
+                if not self.user.profile:
+                    # На всякий случай, если профиль еще не создан
+                    self.user.profile = UserProfile(user_id=self.user.id)
+                    session.add(self.user.profile)
 
-            self.user.profile.last_emotional_tone = emotional_tone
-            self.user.profile.dominant_communication_style = communication_style
-            self.db_session.commit()
-        except Exception as e:
-            self.db_session.rollback()
-            print(f"❌ Ошибка при сохранении психолингвистических метрик: {e}")
-
-    def __del__(self):
-        if hasattr(self, 'db_session'):
-            self.db_session.close()
+                self.user.profile.last_emotional_tone = emotional_tone
+                self.user.profile.dominant_communication_style = communication_style
+            except Exception as e:
+                print(f"❌ Ошибка при сохранении психолингвистических метрик: {e}")
+                raise

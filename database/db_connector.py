@@ -5,9 +5,24 @@ from chromadb.utils.embedding_functions import DefaultEmbeddingFunction
 from typing import Optional
 
 # --- SQLite (замена для PostgreSQL) ---
+from contextlib import contextmanager
+
 DB_FILE = "agent_memory.db"
-engine = sqlalchemy.create_engine(f"sqlite:///{DB_FILE}")
+engine = sqlalchemy.create_engine(f"sqlite:///{DB_FILE}", connect_args={"check_same_thread": False})
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+@contextmanager
+def session_scope():
+    """Обеспечивает транзакционный scope для каждой операции."""
+    session = SessionLocal()
+    try:
+        yield session
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()
 
 def get_db_session():
     """Возвращает сессию для работы с базой данных SQLite."""

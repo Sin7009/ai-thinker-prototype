@@ -40,6 +40,28 @@ class DetectorAgent:
             logging.error(f"Ошибка при инициализации CognitiveBiasStore: {e}")
             self.bias_store = None
 
+    def _verify_bias(self, text, suspected_bias):
+        """
+        Пытается опровергнуть наличие искажения.
+        """
+        verification_prompt = (
+            f"Текст: «{text}»\n"
+            f"Гипотеза: Здесь есть искажение '{suspected_bias}'.\n"
+            "Твоя задача — найти аргументы ПРОТИВ этой гипотезы. "
+            "Может ли это быть просто фигура речи, сарказм или рациональное суждение? "
+            "Если сомнения сильны, верни FALSE. Если искажение очевидно, верни TRUE."
+        )
+        try:
+            messages = [
+                SystemMessage(content="You are a skeptical psychologist. Your task is to challenge hypotheses about cognitive biases."),
+                HumanMessage(content=verification_prompt)
+            ]
+            res = self.llm.invoke(messages)
+            response_text = res.content.strip().upper()
+            return "TRUE" in response_text
+        except Exception as e:
+            logging.error(f"Ошибка при верификации искажения: {e}")
+            return False # В случае ошибки считаем, что искажения нет
 
     def _create_system_prompt(self, relevant_biases: list) -> str:
         """
@@ -142,6 +164,12 @@ class DetectorAgent:
             if not isinstance(analysis_data["cognitive_biases"], list):
                  raise ValueError("Ключ 'cognitive_biases' не является списком")
 
+            # Верификация найденных искажений
+            verified_biases = []
+            for bias in analysis_data["cognitive_biases"]:
+                if self._verify_bias(text, bias.get("name")):
+                    verified_biases.append(bias)
+            analysis_data["cognitive_biases"] = verified_biases
 
             logging.info(f"Анализ текста '{text[:50]}...' завершен.")
             return analysis_data
