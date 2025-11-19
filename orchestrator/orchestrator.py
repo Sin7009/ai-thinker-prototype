@@ -205,9 +205,9 @@ class Orchestrator:
         и сохраняет результаты в базу данных.
         """
 
-        # Ждем 2 секунды, чтобы основной TaskAgent успел отработать
+        # Ждем 3 секунды, чтобы основной TaskAgent успел отработать
         # и не создавать пиковую нагрузку на API
-        time.sleep(2)
+        time.sleep(3)
         try:
             analysis_data = self.detector_agent.analyze(text)
             if 'cognitive_biases' in analysis_data and isinstance(analysis_data.get('cognitive_biases'), list):
@@ -410,7 +410,20 @@ class Orchestrator:
         try:
             # 3. Вызываем LLM и парсим ответ
             raw_response = self.task_agent.process("", context_memory=analysis_prompt)
-            analysis_result = json.loads(raw_response)
+
+            # --- ФИКС: Очистка JSON ---
+            # Ищем, где начинается первая { и где заканчивается последняя }
+            start_idx = raw_response.find('{')
+            end_idx = raw_response.rfind('}')
+            
+            if start_idx != -1 and end_idx != -1 and end_idx > start_idx:
+                # Вырезаем только JSON-объект, игнорируя текст до и после
+                clean_json = raw_response[start_idx : end_idx + 1]
+                analysis_result = json.loads(clean_json)
+            else:
+                # Если скобки не найдены, логируем ошибку и продолжаем
+                raise json.JSONDecodeError("Не удалось найти чистый JSON-объект в ответе LLM.", raw_response, 0)
+            # --- КОНЕЦ ФИКСА ---
 
             # 4. Сохраняем результат в базу
             self.memory.save_session_analysis(
