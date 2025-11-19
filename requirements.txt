@@ -1,6 +1,0 @@
-langchain
-langchain-community
-langchain-gigachat
-chromadb
-sentence-transformers
-sqlalchemy

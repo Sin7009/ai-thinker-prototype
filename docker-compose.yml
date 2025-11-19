@@ -1,0 +1,14 @@
+version: '3.8'
+
+services:
+  ai-thinker:
+    build: .
+    container_name: ai_thinker_bot
+    restart: unless-stopped
+    volumes:
+      # Пробрасываем локальные папки/файлы внутрь контейнера для сохранения данных
+      - ./agent_memory.db:/app/agent_memory.db
+      - ./chroma_storage:/app/chroma_storage
+    environment:
+      - GIGACHAT_CREDENTIALS=${GIGACHAT_CREDENTIALS}
+      - TELEGRAM_TOKEN=${TELEGRAM_TOKEN}

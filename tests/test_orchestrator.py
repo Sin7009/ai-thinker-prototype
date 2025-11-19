@@ -1,23 +1,4 @@
 import unittest
-import subprocess
-import sys
-
-def install_dependencies():
-    packages = [
-        "langchain",
-        "langchain-community",
-        "langchain-gigachat",
-        "chromadb",
-        "sentence-transformers",
-        "sqlalchemy"
-    ]
-    for package in packages:
-        try:
-            __import__(package)
-        except ImportError:
-            subprocess.check_call([sys.executable, "-m", "pip", "install", package])
-
-install_dependencies()
 from unittest.mock import MagicMock, patch
 from orchestrator.orchestrator import Orchestrator, AgentMode
 from orchestrator.action_library import ActionLibrary
