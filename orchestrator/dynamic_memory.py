@@ -15,7 +15,7 @@ class DynamicMemory:
         self.task_agent = task_agent # Сохраняем экземпляр агента
 
         # Инициализация пользователя и профиля
-        self.user = self._get_or_create_user()
+        self.user_id = self._get_or_create_user_id()
 
         # Векторная память — история диалогов
         self.vector_collection = get_chroma_collection(f"dialogue_vector_{user_id_stub}")
@@ -29,18 +29,19 @@ class DynamicMemory:
             embedding_function=embedding_function
         )
 
-    def _get_or_create_user(self):
+    def _get_or_create_user_id(self) -> int:
         with session_scope() as session:
             user = session.query(User).filter_by(user_id_stub=self.user_id_stub).first()
             if not user:
                 user = User(user_id_stub=self.user_id_stub)
                 session.add(user)
-                session.flush()  # Ensures user.id is available
-            if not user.profile:
+                session.flush() # Чтобы получить ID
+
+                # Создаем профиль сразу
                 profile = UserProfile(user_id=user.id)
                 session.add(profile)
-                user.profile = profile
-            return user
+
+            return user.id # Возвращаем только ID
 
     def _is_significant(self, text: str) -> bool:
         """
@@ -73,7 +74,7 @@ class DynamicMemory:
         with session_scope() as session:
             try:
                 # 1. Всегда сохраняем в SQLite для полной истории
-                entry = DialogueEntry(user_id=self.user.id, is_user=is_user, content=text)
+                entry = DialogueEntry(user_id=self.user_id, is_user=is_user, content=text)
                 session.add(entry)
                 session.flush() # To get entry.id
 
@@ -87,7 +88,7 @@ class DynamicMemory:
                         ids=[str(entry.id)],
                         documents=[text],
                         metadatas=[{
-                            "user_id": self.user.id,
+                            "user_id": self.user_id,
                             "type": "user_input",
                             "timestamp": entry.timestamp.isoformat() if entry.timestamp else ""
                         }]
@@ -103,7 +104,7 @@ class DynamicMemory:
         with session_scope() as session:
             try:
                 new_pattern = CognitivePattern(
-                    user_id=self.user.id,
+                    user_id=self.user_id,
                     pattern_name=pattern_name,
                     confidence_score=confidence,
                     context=context
@@ -138,7 +139,7 @@ class DynamicMemory:
         """Возвращает количество раз, сколько встречался паттерн."""
         with session_scope() as session:
             count = session.query(CognitivePattern).filter_by(
-                user_id=self.user.id,
+                user_id=self.user_id,
                 pattern_name=pattern_name
             ).count()
             return count
@@ -147,7 +148,7 @@ class DynamicMemory:
         """Возвращает все когнитивные паттерны для текущего пользователя."""
         try:
             with session_scope() as session:
-                return session.query(CognitivePattern).filter_by(user_id=self.user.id).all()
+                return session.query(CognitivePattern).filter_by(user_id=self.user_id).all()
         except Exception as e:
             print(f"Ошибка при получении паттернов: {e}")
             return []
@@ -170,7 +171,7 @@ class DynamicMemory:
         with session_scope() as session:
             patterns = (
                 session.query(CognitivePattern)
-                .filter_by(user_id=self.user.id, pattern_name=pattern_name)
+                .filter_by(user_id=self.user_id, pattern_name=pattern_name)
                 .order_by(CognitivePattern.observed_at)
                 .all()
             )
@@ -198,7 +199,7 @@ class DynamicMemory:
         with session_scope() as session:
             patterns = (
                 session.query(CognitivePattern)
-                .filter_by(user_id=self.user.id, pattern_name=pattern_name)
+                .filter_by(user_id=self.user_id, pattern_name=pattern_name)
                 .order_by(desc(CognitivePattern.observed_at))
                 .limit(limit)
                 .all()
@@ -212,7 +213,7 @@ class DynamicMemory:
         """
         with session_scope() as session:
             count = session.query(CognitivePattern).filter_by(
-                user_id=self.user.id,
+                user_id=self.user_id,
                 pattern_name=pattern_name
             ).count()
             return count
@@ -220,19 +221,20 @@ class DynamicMemory:
     def get_user_profile_summary(self) -> str:
         """Возвращает краткое резюме того, что знает о пользователе."""
         summary_parts = []
-
-        # Имя
-        name = self.get_user_name()
-        if name:
-            summary_parts.append(f"Тебя зовут {name}.")
-
-        # Последнее резюме
-        last_summary = self.get_last_session_summary()
-        if last_summary:
-            summary_parts.append(f"В прошлый раз мы говорили о: {last_summary}")
-
-        # Паттерны
+        from sqlalchemy.orm import joinedload
         with session_scope() as session:
+            user = session.query(User).options(joinedload(User.profile)).get(self.user_id)
+            # Имя
+            name = self.get_user_name()
+            if name:
+                summary_parts.append(f"Тебя зовут {name}.")
+
+            # Последнее резюме
+            last_summary = self.get_last_session_summary()
+            if last_summary:
+                summary_parts.append(f"В прошлый раз мы говорили о: {last_summary}")
+
+            # Паттерны
             patterns = self.get_user_patterns()
             if patterns:
                 unique_biases = {p.pattern_name for p in patterns}
@@ -247,20 +249,20 @@ class DynamicMemory:
                     summary_parts.append(f"Я отмечал у тебя паттерны: {', '.join(human_biases)}.")
 
             # Число диалогов
-            recent_messages = session.query(DialogueEntry).filter_by(user_id=self.user.id).count()
+            recent_messages = session.query(DialogueEntry).filter_by(user_id=self.user_id).count()
             if recent_messages > 0:
                 summary_parts.append(f"Мы уже обменялись {recent_messages} сообщениями.")
 
-        # Черты пользователя
-        traits_summary = self.get_user_traits_summary()
-        if traits_summary:
-            summary_parts.append(traits_summary)
+            # Черты пользователя
+            traits_summary = self.get_user_traits_summary()
+            if traits_summary:
+                summary_parts.append(traits_summary)
 
-        # Новые психолингвистические данные
-        if self.user.profile and self.user.profile.last_emotional_tone:
-            summary_parts.append(f"Твой последний эмоциональный тон был '{self.user.profile.last_emotional_tone}'.")
-        if self.user.profile and self.user.profile.dominant_communication_style:
-            summary_parts.append(f"Твой доминирующий стиль общения — '{self.user.profile.dominant_communication_style}'.")
+            # Новые психолингвистические данные
+            if user.profile and user.profile.last_emotional_tone:
+                summary_parts.append(f"Твой последний эмоциональный тон был '{user.profile.last_emotional_tone}'.")
+            if user.profile and user.profile.dominant_communication_style:
+                summary_parts.append(f"Твой доминирующий стиль общения — '{user.profile.dominant_communication_style}'.")
 
         return " ".join(summary_parts) if summary_parts else "Пока что я мало о тебе знаю."
 
@@ -273,7 +275,7 @@ class DynamicMemory:
             try:
                 # Ищем существующую гипотезу
                 existing_trait = session.query(UserTrait).filter_by(
-                    user_id=self.user.id,
+                    user_id=self.user_id,
                     trait_description=trait_description
                 ).first()
 
@@ -292,7 +294,7 @@ class DynamicMemory:
                 else:
                     # Если не нашли, создаем новую гипотезу
                     new_trait = UserTrait(
-                        user_id=self.user.id,
+                        user_id=self.user_id,
                         trait_type=trait_type,
                         trait_description=trait_description,
                         confidence=confidence,
@@ -310,7 +312,7 @@ class DynamicMemory:
         """Возвращает форматированную строку с чертами пользователя."""
         with session_scope() as session:
             try:
-                traits = get_user_traits(session, self.user.id)
+                traits = get_user_traits(session, self.user_id)
                 if not traits:
                     return ""
 
@@ -359,7 +361,7 @@ class DynamicMemory:
                     summary_parts.append(f"Я отмечал у тебя паттерны: {', '.join(human_biases)}.")
 
             # 4. Активность
-            message_count = session.query(DialogueEntry).filter_by(user_id=self.user.id).count()
+            message_count = session.query(DialogueEntry).filter_by(user_id=self.user_id).count()
             if message_count > 0:
                 summary_parts.append(f"Мы уже обменялись {message_count} сообщениями.")
 
@@ -367,13 +369,16 @@ class DynamicMemory:
 
     def save_user_name(self, name: str):
         with session_scope() as session:
-            if not self.user.profile:
-                self.user.profile = UserProfile(user_id=self.user.id)
-                session.add(self.user.profile)
-            self.user.profile.name = name
+            user = session.query(User).options(joinedload(User.profile)).get(self.user_id)
+            if not user.profile:
+                user.profile = UserProfile(user_id=self.user_id)
+                session.add(user.profile)
+            user.profile.name = name
 
     def get_user_name(self) -> str:
-        return self.user.profile.name if self.user.profile and self.user.profile.name else None
+        with session_scope() as session:
+            user = session.query(User).options(joinedload(User.profile)).get(self.user_id)
+            return user.profile.name if user.profile and user.profile.name else None
 
     def save_session_analysis(self, summary: str, topics: list, patterns: list):
         """
@@ -382,7 +387,7 @@ class DynamicMemory:
         with session_scope() as session:
             try:
                 analysis_entry = SessionAnalysis(
-                    user_id=self.user.id,
+                    user_id=self.user_id,
                     session_summary=summary,
                     key_topics=", ".join(topics),
                     identified_patterns=", ".join(patterns)
@@ -398,18 +403,21 @@ class DynamicMemory:
         """
         with session_scope() as session:
             return session.query(SessionAnalysis).filter_by(
-                user_id=self.user.id
+                user_id=self.user_id
             ).order_by(desc(SessionAnalysis.ended_at)).limit(limit).all()
 
     def save_session_summary(self, summary: str):
         with session_scope() as session:
-            if not self.user.profile:
-                self.user.profile = UserProfile(user_id=self.user.id)
-                session.add(self.user.profile)
-            self.user.profile.last_session_summary = summary
+            user = session.query(User).options(joinedload(User.profile)).get(self.user_id)
+            if not user.profile:
+                user.profile = UserProfile(user_id=self.user_id)
+                session.add(user.profile)
+            user.profile.last_session_summary = summary
 
     def get_last_session_summary(self) -> str:
-        return self.user.profile.last_session_summary if self.user.profile and self.user.profile.last_session_summary else None
+        with session_scope() as session:
+            user = session.query(User).options(joinedload(User.profile)).get(self.user_id)
+            return user.profile.last_session_summary if user.profile and user.profile.last_session_summary else None
 
     def summarize_old_dialogues(self, window_size: int = 20, summarization_threshold: int = 50):
         """
@@ -417,13 +425,13 @@ class DynamicMemory:
         суммаризирует самые старые из них.
         """
         with session_scope() as session:
-            dialogue_count = session.query(DialogueEntry).filter_by(user_id=self.user.id).count()
+            dialogue_count = session.query(DialogueEntry).filter_by(user_id=self.user_id).count()
 
             if dialogue_count > summarization_threshold:
                 # 1. Получаем самые старые записи для суммаризации
                 entries_to_summarize = (
                     session.query(DialogueEntry)
-                    .filter_by(user_id=self.user.id)
+                    .filter_by(user_id=self.user_id)
                     .order_by(DialogueEntry.timestamp)
                     .limit(window_size)
                     .all()
@@ -445,13 +453,14 @@ class DynamicMemory:
                 summary = self.task_agent.process(dialogue_text, context_memory=summary_prompt)
 
                 # 4. Добавляем саммари в профиль пользователя
-                if not self.user.profile:
-                    self.user.profile = UserProfile(user_id=self.user.id)
-                    session.add(self.user.profile)
+                user = session.query(User).options(joinedload(User.profile)).get(self.user_id)
+                if not user.profile:
+                    user.profile = UserProfile(user_id=self.user_id)
+                    session.add(user.profile)
 
                 # Обновляем long_term_summary, добавляя новое саммари к существующему
-                existing_summary = self.user.profile.long_term_summary or ""
-                self.user.profile.long_term_summary = f"{existing_summary}\n- {summary}".strip()
+                existing_summary = user.profile.long_term_summary or ""
+                user.profile.long_term_summary = f"{existing_summary}\n- {summary}".strip()
 
                 # 5. Удаляем старые записи
                 for entry in entries_to_summarize:
@@ -466,13 +475,14 @@ class DynamicMemory:
         """
         with session_scope() as session:
             try:
-                if not self.user.profile:
+                user = session.query(User).options(joinedload(User.profile)).get(self.user_id)
+                if not user.profile:
                     # На всякий случай, если профиль еще не создан
-                    self.user.profile = UserProfile(user_id=self.user.id)
-                    session.add(self.user.profile)
+                    user.profile = UserProfile(user_id=self.user_id)
+                    session.add(user.profile)
 
-                self.user.profile.last_emotional_tone = emotional_tone
-                self.user.profile.dominant_communication_style = communication_style
+                user.profile.last_emotional_tone = emotional_tone
+                user.profile.dominant_communication_style = communication_style
             except Exception as e:
                 print(f"❌ Ошибка при сохранении психолингвистических метрик: {e}")
                 raise

@@ -1,4 +1,5 @@
 import os
+import traceback
 from langchain_gigachat.chat_models import GigaChat
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain.memory import ConversationBufferMemory
@@ -59,6 +60,7 @@ class TaskAgent:
             return response.content
         except Exception as e:
             print(f"Ошибка при обращении к GigaChat: {e}")
+            traceback.print_exc()
             return "Извините, произошла ошибка при обработке вашего запроса."
 
     def clear_memory(self):
