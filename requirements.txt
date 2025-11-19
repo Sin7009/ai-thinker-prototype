@@ -2,4 +2,5 @@ langchain
 langchain-community
 langchain-gigachat
 chromadb
-sentence_transformers
+sentence-transformers
+sqlalchemy
