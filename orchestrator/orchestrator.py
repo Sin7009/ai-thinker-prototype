@@ -10,6 +10,8 @@ from orchestrator.action_library import ActionLibrary #Нужно реализо
 from database.db_connector import get_chroma_collection, chroma_client
 import re
 
+import time
+
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from .agent_mode import AgentMode
@@ -202,6 +204,10 @@ class Orchestrator:
         Запускает психолингвистический анализ в фоновом потоке
         и сохраняет результаты в базу данных.
         """
+
+        # Ждем 2 секунды, чтобы основной TaskAgent успел отработать
+        # и не создавать пиковую нагрузку на API
+        time.sleep(2)
         try:
             analysis_data = self.detector_agent.analyze(text)
             if 'cognitive_biases' in analysis_data and isinstance(analysis_data.get('cognitive_biases'), list):
@@ -448,5 +454,12 @@ class Orchestrator:
                 else:
                     print("    🔁 Паттерн сохраняется — продолжаем работу.")
 
+    def end_session(self):
+        """
+        Публичный метод для корректного завершения сессии.
+        Вызывается из main.py при штатном выходе или Ctrl+C.
+        """
+        print("\nЗавершение работы... Сохранение данных сессии.")
+        self._analyze_and_save_session()
 
 

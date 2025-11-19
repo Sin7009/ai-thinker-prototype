@@ -1,5 +1,5 @@
 # В начале файла
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 from database.models import User, CognitivePattern, DialogueEntry, UserProfile, UserTrait, SessionAnalysis
 from chromadb.utils.embedding_functions import SentenceTransformerEmbeddingFunction
 from database.db_connector import SessionLocal, get_chroma_collection, add_user_trait, get_user_traits, session_scope
