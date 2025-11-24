@@ -9,6 +9,11 @@ from contextlib import contextmanager
 
 DB_FILE = "agent_memory.db"
 engine = sqlalchemy.create_engine(f"sqlite:///{DB_FILE}", connect_args={"check_same_thread": False})
+
+# Включаем WAL-режим для конкурентности
+with engine.connect() as connection:
+    connection.execute(sqlalchemy.text("PRAGMA journal_mode=WAL;"))
+
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 @contextmanager
