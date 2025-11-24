@@ -13,7 +13,7 @@ import re
 from .agent_mode import AgentMode
 
 # --- КОНФИГУРАЦИЯ МОДЕЛЕЙ (OPENROUTER) ---
-MODEL_LITE = "google/gemini-2.0-flash-exp:free"
+MODEL_LITE = "x-ai/grok-4.1-fast:free"
 MODEL_SMART = "deepseek/deepseek-r1:free"
 
 class Orchestrator:
