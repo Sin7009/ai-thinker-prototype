@@ -1,182 +1,108 @@
-# -*- coding: utf-8 -*-
 import os
 import json
 import logging
-from langchain_community.chat_models import GigaChat
+from langchain_openai import ChatOpenAI
 from langchain_core.messages import SystemMessage, HumanMessage
 from knowledge_base.bias_store import CognitiveBiasStore
 
-# Настройка логирования
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 class DetectorAgent:
     """
-    Интеллектуальный агент для диагностики когнитивных искажений (Контур Б).
-    Использует LLM (GigaChat) для семантического анализа текста на основе
-    библиотеки когнитивных искажений, подгружаемой через RAG.
+    Агент для диагностики (Контур Б).
+    Использует дешевую/быструю модель через OpenRouter.
     """
-    def __init__(self, model_name: str = "GigaChat-2"):
-        """
-        Инициализирует агента, модель GigaChat и хранилище когнитивных искажений.
-        """
+    def __init__(self, model_name: str = "google/gemini-2.0-flash-exp:free"):
         try:
-            self.llm = GigaChat(
-                credentials=os.environ.get("GIGACHAT_CREDENTIALS"),
-                verify_ssl_certs=False,
-                scope="GIGACHAT_API_PERS",
+            self.llm = ChatOpenAI(
+                base_url="https://openrouter.ai/api/v1",
+                api_key=os.environ.get('OPENROUTER_API_KEY'),
                 model=model_name,
-                temperature=0.01
+                temperature=0.1, # Низкая температура для анализа
+                default_headers={
+                    "HTTP-Referer": "https://github.com/ai-thinker",
+                    "X-Title": "AI Thinker Detector"
+                }
             )
-            logging.info("DetectorAgent (LLM-based) инициализирован успешно.")
-        except Exception as e:
-            logging.error(f"Ошибка при инициализации GigaChat в DetectorAgent: {e}")
-            self.llm = None
-
-        # Инициализация RAG-хранилища для искажений
-        try:
             self.bias_store = CognitiveBiasStore()
-            logging.info("Хранилище когнитивных искажений (CognitiveBiasStore) инициализировано.")
+            logging.info(f"DetectorAgent инициализирован ({model_name}).")
         except Exception as e:
-            logging.error(f"Ошибка при инициализации CognitiveBiasStore: {e}")
+            logging.error(f"Ошибка инициализации DetectorAgent: {e}")
+            self.llm = None
             self.bias_store = None
 
     def _verify_bias(self, text, suspected_bias):
-        """
-        Пытается опровергнуть наличие искажения.
-        """
+        """Верификация гипотезы (Адвокат Дьявола)."""
         verification_prompt = (
             f"Текст: «{text}»\n"
             f"Гипотеза: Здесь есть искажение '{suspected_bias}'.\n"
             "Твоя задача — найти аргументы ПРОТИВ этой гипотезы. "
-            "Может ли это быть просто фигура речи, сарказм или рациональное суждение? "
             "Если сомнения сильны, верни FALSE. Если искажение очевидно, верни TRUE."
         )
         try:
             messages = [
-                SystemMessage(content="You are a skeptical psychologist. Your task is to challenge hypotheses about cognitive biases."),
+                SystemMessage(content="You are a skeptical psychologist. Output only TRUE or FALSE."),
                 HumanMessage(content=verification_prompt)
             ]
             res = self.llm.invoke(messages)
-            response_text = res.content.strip().upper()
-            return "TRUE" in response_text
-        except Exception as e:
-            logging.error(f"Ошибка при верификации искажения: {e}")
-            return False # В случае ошибки считаем, что искажения нет
+            return "TRUE" in res.content.strip().upper()
+        except Exception:
+            return False
 
     def _create_system_prompt(self, relevant_biases: list) -> str:
-        """
-        Создает системный промпт с динамическим списком релевантных когнитивных искажений.
-        """
         if relevant_biases:
-            biases_description = "\n".join([
-                f"- {bias['name']}: {bias['description']}"
-                for bias in relevant_biases
-            ])
-            bias_instruction = f"""Проанализируй текст на наличие признаков когнитивных искажений из этого списка наиболее вероятных кандидатов:
-{biases_description}"""
+            biases_desc = "\n".join([f"- {b['name']}: {b['description']}" for b in relevant_biases])
+            instruction = f"Список кандидатов:\n{biases_desc}"
         else:
-            bias_instruction = "Проанализируй текст на наличие признаков любых известных когнитивных искажений. В твоем ответе могут быть искажения, даже если их нет в предоставленном списке."
+            instruction = "Ищи любые известные когнитивные искажения."
 
+        return f"""
+Ты — психолог-лингвист. Анализируй текст на: когнитивные искажения, эмоциональный тон, стиль.
+1. Искажения: {instruction}
+2. Тон: (Нейтральный, Радость, Гнев, Страх, Грусть).
+3. Стиль: (Аналитический, Эмоциональный, Директивный).
 
-        prompt = f"""
-Ты — опытный психолог-лингвист. Твоя задача — провести глубокий психолингвистический анализ текста пользователя по трем направлениям: когнитивные искажения, эмоциональный тон и стиль коммуникации.
-
-**1. Когнитивные искажения:**
-{bias_instruction}
-
-**2. Эмоциональный тон:**
-Определи доминирующую эмоцию в тексте. Выбери ОДНУ из следующих: Нейтральный, Радость, Грусть, Гнев, Страх, Удивление, Неуверенность, Раздражение.
-
-**3. Стиль коммуникации:**
-Определи основной стиль общения пользователя. Выбери ОДИН из следующих:
-- **Аналитический:** Структурированный, логичный, сфокусированный на фактах и данных.
-- **Эмоциональный:** Экспрессивный, сфокусированный на чувствах и личных переживаниях.
-- **Директивный:** Уверенный, нацеленный на результат, дающий указания или твердо заявляющий о своей позиции.
-- **Интуитивный:** Ассоциативный, образный, перескакивающий между идеями, сфокусированный на общей картине.
-
-**Формат ответа:**
-Верни результат СТРОГО в формате единого JSON-объекта.
-Объект должен содержать три ключа: "cognitive_biases", "emotional_tone", "communication_style".
-- "cognitive_biases" должен быть списком словарей (пустой список [], если искажений нет).
-- "emotional_tone" должен содержать одну строку с названием эмоции.
-- "communication_style" должен содержать одну строку с названием стиля.
-
-**Пример ответа:**
+Верни ТОЛЬКО JSON:
 {{
-  "cognitive_biases": [
-    {{
-      "name": "Катастрофизация",
-      "confidence": 95,
-      "context": "Пользователь предполагает наихудший исход, говоря 'если я провалю это собеседование, моя карьера закончена'."
-    }}
-  ],
-  "emotional_tone": "Страх",
-  "communication_style": "Эмоциональный"
+  "cognitive_biases": [{{"name": "...", "confidence": 90, "context": "..."}}],
+  "emotional_tone": "...",
+  "communication_style": "..."
 }}
-
-Не добавляй никаких пояснений до или после JSON-ответа. Только чистый JSON.
 """
-        return prompt
 
     def analyze(self, text: str) -> dict:
-        """
-        Анализирует текст на наличие когнитивных искажений, эмоционального тона и стиля коммуникации.
-        Использует RAG для поиска релевантных искажений перед отправкой запроса LLM.
-        Возвращает словарь Python с комплексным результатом.
-        """
-        default_response = {
-            "cognitive_biases": [],
-            "emotional_tone": "Нейтральный",
-            "communication_style": "Аналитический"
-        }
+        default_response = {"cognitive_biases": [], "emotional_tone": "Нейтральный", "communication_style": "Аналитический"}
 
-        if not self.llm or not self.bias_store:
-            logging.error("LLM или CognitiveBiasStore не были инициализированы. Анализ невозможен.")
+        if not self.llm or not text:
             return default_response
 
-        if not text:
-            return default_response
-
-        # 1. RAG-поиск релевантных искажений
         relevant_biases = self.bias_store.query_biases(text, n_results=5)
-
-        # 2. Создание динамического промпта
         system_prompt = self._create_system_prompt(relevant_biases)
 
         messages = [
             SystemMessage(content=system_prompt),
-            HumanMessage(content=f"Проанализируй этот текст: \"{text}\"")
+            HumanMessage(content=f"Проанализируй: \"{text}\"")
         ]
 
         try:
             res = self.llm.invoke(messages)
-            llm_response_text = res.content
+            raw_content = res.content
 
-            if "```json" in llm_response_text:
-                llm_response_text = llm_response_text.split("```json")[1].split("```")[0].strip()
+            # Очистка JSON от markdown
+            if "```json" in raw_content:
+                raw_content = raw_content.split("```json")[1].split("```")[0].strip()
+            elif "```" in raw_content:
+                raw_content = raw_content.split("```")[1].split("```")[0].strip()
 
-            analysis_data = json.loads(llm_response_text)
+            analysis_data = json.loads(raw_content)
 
-            # Новая, более надежная валидация
-            if not isinstance(analysis_data, dict) or not all(k in analysis_data for k in ["cognitive_biases", "emotional_tone", "communication_style"]):
-                raise ValueError("LLM-ответ имеет неверную структуру (отсутствуют ключи)")
+            # Верификация
+            if "cognitive_biases" in analysis_data:
+                verified = [b for b in analysis_data["cognitive_biases"] if self._verify_bias(text, b.get("name"))]
+                analysis_data["cognitive_biases"] = verified
 
-            if not isinstance(analysis_data["cognitive_biases"], list):
-                 raise ValueError("Ключ 'cognitive_biases' не является списком")
-
-            # Верификация найденных искажений
-            verified_biases = []
-            for bias in analysis_data["cognitive_biases"]:
-                if self._verify_bias(text, bias.get("name")):
-                    verified_biases.append(bias)
-            analysis_data["cognitive_biases"] = verified_biases
-
-            logging.info(f"Анализ текста '{text[:50]}...' завершен.")
             return analysis_data
 
-        except json.JSONDecodeError as e:
-            logging.error(f"Ошибка декодирования JSON от LLM: {e}\nОтвет LLM:\n{llm_response_text}")
-            return default_response
         except Exception as e:
-            logging.error(f"Неожиданная ошибка при анализе текста в DetectorAgent: {e}")
+            logging.error(f"Ошибка анализа: {e}")
             return default_response
