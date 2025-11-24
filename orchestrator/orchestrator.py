@@ -1,25 +1,20 @@
 import uuid
 import json
 import threading
+import time
 from agents.task_agent import TaskAgent
 from agents.detector_agent import DetectorAgent
 from agents.methodology_agent import MethodologyAgent
 from agents.bias_mapping import RUSSIAN_TO_INTERNAL_BIAS_MAP
 from orchestrator.dynamic_memory import DynamicMemory
-from orchestrator.action_library import ActionLibrary #Нужно реализовать библиотеку действий
+from orchestrator.action_library import ActionLibrary
 from database.db_connector import get_chroma_collection, chroma_client
 import re
-
-import time
-
-from langchain_core.messages import HumanMessage, SystemMessage
-
 from .agent_mode import AgentMode
 
-# Актуальные модели второго поколения
-MODEL_LITE = "GigaChat-2"
-MODEL_SMART = "GigaChat-2-Pro"
-MODEL_MAX = "GigaChat-2-Max"
+# --- КОНФИГУРАЦИЯ МОДЕЛЕЙ (OPENROUTER) ---
+MODEL_LITE = "google/gemini-2.0-flash-exp:free"
+MODEL_SMART = "deepseek/deepseek-r1:free"
 
 class Orchestrator:
     def __init__(self, user_id_stub: str):
@@ -36,7 +31,7 @@ class Orchestrator:
         self.vector_collection = get_chroma_collection(f"dialogue_vector_{user_id_stub}")
         self.action_library = ActionLibrary(self.methodology_agent)
         self.strategic_note = "" # Здесь будет храниться стратегия на сессию
-        print(f"Оркестратор инициализирован для пользователя {user_id_stub}.")
+        print(f"Оркестратор инициализирован ({user_id_stub}).")
         self._develop_strategy() # Вырабатываем стратегию при старте
 
     def _develop_strategy(self):
@@ -197,17 +192,13 @@ class Orchestrator:
         ]
         return any(trigger in text_norm for trigger in triggers)
 
-
-    
     def _run_analysis_in_background(self, text: str):
         """
         Запускает психолингвистический анализ в фоновом потоке
         и сохраняет результаты в базу данных.
         """
-
-        # Ждем 3 секунды, чтобы основной TaskAgent успел отработать
-        # и не создавать пиковую нагрузку на API
-        time.sleep(3)
+        # Ждем 2 секунды, чтобы основной TaskAgent успел отработать (для API)
+        time.sleep(2)
         try:
             analysis_data = self.detector_agent.analyze(text)
             if 'cognitive_biases' in analysis_data and isinstance(analysis_data.get('cognitive_biases'), list):
@@ -422,7 +413,8 @@ class Orchestrator:
                 analysis_result = json.loads(clean_json)
             else:
                 # Если скобки не найдены, логируем ошибку и продолжаем
-                raise json.JSONDecodeError("Не удалось найти чистый JSON-объект в ответе LLM.", raw_response, 0)
+                # raise json.JSONDecodeError("Не удалось найти чистый JSON-объект в ответе LLM.", raw_response, 0)
+                analysis_result = json.loads(raw_response) # Try direct load as fallback
             # --- КОНЕЦ ФИКСА ---
 
             # 4. Сохраняем результат в базу
@@ -474,5 +466,3 @@ class Orchestrator:
         """
         print("\nЗавершение работы... Сохранение данных сессии.")
         self._analyze_and_save_session()
-
-

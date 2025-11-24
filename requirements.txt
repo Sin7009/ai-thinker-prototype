@@ -1,0 +1,8 @@
+langchain-core
+langchain-community
+langchain-openai
+chromadb
+sqlalchemy
+sentence-transformers
+python-telegram-bot
+python-dotenv
