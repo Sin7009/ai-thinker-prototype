@@ -5,11 +5,17 @@ from telegram import Update
 from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, MessageHandler, filters
 from orchestrator.orchestrator import Orchestrator, AgentMode
 
-# Настройка логирования
+# В начале файла telegram_bot.py
+
+# Основная настройка
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
 )
+
+# Отключаем лишний шум от библиотек
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("telegram").setLevel(logging.WARNING)
 
 # Глобальный словарь сессий: {telegram_user_id: OrchestratorInstance}
 # В продакшене лучше использовать Redis, но для прототипа словарь в памяти подойдет.
