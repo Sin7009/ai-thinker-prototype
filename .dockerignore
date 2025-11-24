@@ -1,6 +1,8 @@
 __pycache__
 venv
+.venv
 .git
 .env
 agent_memory.db
 chroma_storage
+chroma_db
