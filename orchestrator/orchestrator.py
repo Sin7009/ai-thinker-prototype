@@ -220,6 +220,16 @@ class Orchestrator:
         except Exception as e:
             print(f"Ошибка в фоновом потоке анализа: {e}")
 
+    def _should_switch_context(self, text: str) -> bool:
+        """
+        Определяет, нужно ли резко сменить контекст (например, юзер на работе или злится).
+        """
+        triggers = [
+            "на работе", "офис", "заебал", "придурок", "идиот",
+            "хватит", "стоп", "не то", "говно", "ссанина"
+        ]
+        return any(trigger in text.lower() for trigger in triggers)
+
     def process_input(self, text: str) -> str:
         self.memory.save_interaction(text, is_user=True)
         self.last_user_input = text
@@ -231,6 +241,15 @@ class Orchestrator:
         if len(text.split()) > 7:  # Порог на минимальную длину сообщения
             analysis_thread = threading.Thread(target=self._run_analysis_in_background, args=(text,))
             analysis_thread.start()
+
+        # NEW: Context Switch Check
+        if self._should_switch_context(text):
+            # Очищаем кратковременную память агента, чтобы сбросить "инерцию" тусовки
+            self.task_agent.clear_memory()
+            # Добавляем системное сообщение о смене контекста
+            self.task_agent.memory.chat_memory.add_ai_message(
+                "[SYSTEM ALERT: Пользователь сменил контекст (работа/негатив). Сбрось предыдущий план. Адаптируйся под текущую ситуацию.]"
+            )
 
         # 2. Проверка на запрос о памяти
         if self._should_report_memory(text):
