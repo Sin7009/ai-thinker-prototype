@@ -13,8 +13,11 @@ import re
 from .agent_mode import AgentMode
 
 # --- КОНФИГУРАЦИЯ МОДЕЛЕЙ (OPENROUTER) ---
+# Lite: Быстрая и дешевая модель для чата и детектора
 MODEL_LITE = "x-ai/grok-4.1-fast:free"
-MODEL_SMART = "deepseek/deepseek-r1:free"
+
+# Smart: Модель с "Reasoning" (мышлением) для режима Партнера
+MODEL_SMART = "tngtech/deepseek-r1t2-chimera:free"
 
 class Orchestrator:
     def __init__(self, user_id_stub: str):
@@ -221,9 +224,10 @@ class Orchestrator:
         self.memory.save_interaction(text, is_user=True)
         self.last_user_input = text
 
-        # 🚀 **Новый пайплайн обработки** 🚀
+        # 🚀 **Новый пайплайн обработки (Optimistic UI)** 🚀
 
-        # 1. Асинхронный психолингвистический анализ (Fire-and-Forget)
+        # 1. Запуск асинхронного психолингвистического анализа
+        # (Запускаем сразу, поток сам сделает паузу через time.sleep(2))
         if len(text.split()) > 7:  # Порог на минимальную длину сообщения
             analysis_thread = threading.Thread(target=self._run_analysis_in_background, args=(text,))
             analysis_thread.start()
