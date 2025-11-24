@@ -10,5 +10,6 @@ services:
       - ./agent_memory.db:/app/agent_memory.db
       - ./chroma_storage:/app/chroma_storage
     environment:
-      - GIGACHAT_CREDENTIALS=${GIGACHAT_CREDENTIALS}
-      - TELEGRAM_TOKEN=${TELEGRAM_TOKEN}
+          - GIGACHAT_CREDENTIALS=${GIGACHAT_CREDENTIALS} # Можно оставить для совместимости
+          - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}    # <-- Добавьте эту строку
+          - TELEGRAM_TOKEN=${TELEGRAM_TOKEN}
