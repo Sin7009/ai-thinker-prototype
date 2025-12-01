@@ -14,10 +14,10 @@ from .agent_mode import AgentMode
 
 # --- КОНФИГУРАЦИЯ МОДЕЛЕЙ (OPENROUTER) ---
 # Lite: Быстрая и дешевая модель для чата и детектора
-MODEL_LITE = "x-ai/grok-4.1-fast:free"
+MODEL_LITE = "openai/gpt-oss-20b:free"
 
 # Smart: Модель с "Reasoning" (мышлением) для режима Партнера
-MODEL_SMART = "tngtech/deepseek-r1t2-chimera:free"
+MODEL_SMART = "alibaba/tongyi-deepresearch-30b-a3b:free"
 
 class Orchestrator:
     def __init__(self, user_id_stub: str):
