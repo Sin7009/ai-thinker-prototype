@@ -14,7 +14,7 @@ from .agent_mode import AgentMode
 
 # --- КОНФИГУРАЦИЯ МОДЕЛЕЙ (OPENROUTER) ---
 # Lite: Быстрая и дешевая модель для чата и детектора
-MODEL_LITE = "openai/gpt-oss-20b:free"
+MODEL_LITE = "meituan/longcat-flash-chat:free"
 
 # Smart: Модель с "Reasoning" (мышлением) для режима Партнера
 MODEL_SMART = "alibaba/tongyi-deepresearch-30b-a3b:free"
